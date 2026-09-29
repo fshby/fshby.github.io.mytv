@@ -16,6 +16,7 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
 
@@ -120,10 +121,12 @@ class ApiClient {
 
                 sc.init(null, null, null)
 
-                // a more robust version is to pass a custom X509TrustManager
-                // as the second parameter and make checkServerTrusted to accept your server.
-                // Credits: https://github.com/square/okhttp/issues/2372#issuecomment-1774955225
-                client.sslSocketFactory(Tls12SocketFactory(sc.socketFactory))
+                // okhttp4 要求 sslSocketFactory 必须携带 X509TrustManager；
+                // 这里取系统默认信任管理器（此分支仅服务 API 21 的老设备）
+                val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+                tmf.init(null as java.security.KeyStore?)
+                val trustManager = tmf.trustManagers.first { it is X509TrustManager } as X509TrustManager
+                client.sslSocketFactory(Tls12SocketFactory(sc.socketFactory), trustManager)
 
                 val cs = ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
                     .tlsVersions(TlsVersion.TLS_1_2)
@@ -184,7 +187,8 @@ class ApiClient {
     }
 
     companion object {
-        const val HOST = "https://gitee.com/lizongying/my-tv/raw/"
-        const val DOWNLOAD_HOST = "https://gitee.com/lizongying/my-tv/releases/download/"
+        // 自升级站点：GitHub Pages（仓库 fshby/fshby.github.io.mytv，main 分支根目录部署）
+        const val HOST = "https://fshby.github.io/fshby.github.io.mytv/update/"
+        const val DOWNLOAD_HOST = "https://fshby.github.io/fshby.github.io.mytv/download/"
     }
 }

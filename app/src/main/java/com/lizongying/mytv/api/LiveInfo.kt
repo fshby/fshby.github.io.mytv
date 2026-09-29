@@ -2,6 +2,7 @@ package com.lizongying.mytv.api
 
 import android.util.Log
 import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
 import java.io.IOException
@@ -23,7 +24,7 @@ data class LiveInfoRequest(
     var data: String,
 ) : RequestBody() {
     override fun contentType(): MediaType? {
-        return MediaType.parse("application/json;charset=UTF-8")
+        return "application/json;charset=UTF-8".toMediaType()
     }
 
     override fun writeTo(sink: BufferedSink) {

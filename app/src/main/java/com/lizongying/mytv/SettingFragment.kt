@@ -54,7 +54,8 @@ class SettingFragment : DialogFragment() {
         val context = requireContext() // It‘s safe to get context here.
         _binding = SettingBinding.inflate(inflater, container, false)
         binding.versionName.text = "当前版本: v${context.appVersionName}"
-        binding.version.text = "https://github.com/lizongying/my-tv"
+        // 展示当前生效的在线直播源配置地址（若外部放置 tvlist.remote 则显示该地址）
+        binding.version.text = "直播源: ${TVSource.remoteUrl(context)}"
 
         binding.switchChannelReversal.run {
             isChecked = SP.channelReversal

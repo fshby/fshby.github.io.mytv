@@ -109,7 +109,7 @@ object Utils {
             try {
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                    val string = response.body()?.string()
+                    val string = response.body?.string()
                     Gson().fromJson(string, TimeResponse::class.java).data.t.toLong()
                 }
             } catch (e: IOException) {
@@ -131,7 +131,7 @@ object Utils {
             try {
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                    val string = response.body()?.string()
+                    val string = response.body?.string()
 
                     val matchResult = string?.let { regex.find(it) }
                     var x = ""
@@ -162,7 +162,7 @@ object Utils {
             try {
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                    val string = response.body()?.string()
+                    val string = response.body?.string()
 
                     val matches = string?.let { regex2.findAll(it) }
 
@@ -201,7 +201,7 @@ object Utils {
             try {
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                    val string = response.body()?.string()
+                    val string = response.body?.string()
 
                     val matches = string?.let { regex2.findAll(it) }
 

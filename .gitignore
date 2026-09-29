@@ -15,3 +15,8 @@
 .cxx
 local.properties
 /path/
+
+# 正式签名密钥（严禁入库）
+keystore/
+.workbuddy/
+dist/

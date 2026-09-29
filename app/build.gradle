@@ -12,8 +12,12 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.lizongying.mytv"
-        minSdk 17
+        // 安装包名（可与官方 com.lizongying.mytv 并存）。
+        // 注意：只能改 applicationId，不能改 namespace / Java 包名——
+        // libnative.so 采用静态 JNI 注册（Java_com_lizongying_mytv_api_Encryptor_*），
+        // 一旦改包名就会 UnsatisfiedLinkError。
+        applicationId "com.fshby.mytv"
+        minSdk 21 // okhttp4/media3-datasource-okhttp 要求 21；目标盒子 Android 9 (API 28)
         targetSdk 33
         versionCode VersionCode()
         versionName VersionName()
@@ -26,7 +30,7 @@ android {
             cmake {
                 arguments "-DIS_SO_BUILD=${project.hasProperty('IS_SO_BUILD') ? project.IS_SO_BUILD : true}"
 
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                abiFilters "armeabi-v7a", "arm64-v8a"
 //                abiFilters "armeabi-v7a", "arm64-v8a"
             }
         }
@@ -37,16 +41,33 @@ android {
         ndk {
             // Specifies the ABI configurations of your native
             // libraries Gradle should build and package with your app.
-            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+            abiFilters "armeabi-v7a", "arm64-v8a"
 //            abiFilters "armeabi-v7a", "arm64-v8a"
         }
         multiDexEnabled true
+    }
+
+    signingConfigs {
+        release {
+            // 正式签名密钥仅存在于本机 keystore/ 目录（已 gitignore）。
+            // 更新包必须始终用同一密钥签名，否则设备上会拒绝覆盖安装。
+            def ksFile = rootProject.file('keystore/mytv-release.keystore')
+            if (ksFile.exists()) {
+                storeFile ksFile
+                storePassword 'mytv2026'
+                keyAlias 'mytv'
+                keyPassword 'mytv2026'
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (rootProject.file('keystore/mytv-release.keystore').exists()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -103,6 +124,8 @@ dependencies {
     implementation(libs.media3.ui)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.exoplayer.hls)
+    implementation(libs.media3.datasource.okhttp)
+    implementation(libs.okhttp)
     implementation(libs.protobuf.kotlin)
     implementation(libs.gson)
     implementation(libs.converter.gson)

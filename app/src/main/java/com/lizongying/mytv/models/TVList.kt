@@ -1,14 +1,93 @@
 package com.lizongying.mytv.models
 
+import android.content.Context
+import android.util.Log
 import com.lizongying.mytv.R
+import com.lizongying.mytv.TVSource
 
 object TVList {
-    val list: Map<String, List<TV>> by lazy {
-        setup()
+    private const val TAG = "TVList"
+
+    /** 当前生效的频道表：内置表，或被本地文件 / 远程配置覆盖后的结果 */
+    var list: Map<String, List<TV>> = emptyMap()
+        private set
+
+    /** 启动时同步调用：优先外部文件 / 缓存（毫秒级首屏），否则回退内置表 */
+    fun load(context: Context): Map<String, List<TV>> {
+        if (list.isEmpty()) {
+            // 外部列表必须同样过一遍 normalize：id 同时是全局下标，
+            // 不做归一化会导致所有频道 id 都是 0，换台定位错乱
+            val external = TVSource.loadSync(context)?.let { normalize(it) }
+            list = external ?: setup()
+            Log.i(TAG, "load -> ${list.size} groups / ${list.values.sumOf { it.size }} channels")
+        }
+        return list
+    }
+
+    /** 注入远程解析结果；内容与当前一致时返回 false（无需重建界面） */
+    fun applyRemote(parsed: Map<String, List<TV>>): Boolean {
+        val next = normalize(parsed)
+        if (next == list) {
+            Log.i(TAG, "remote list unchanged")
+            return false
+        }
+        list = next
+        return true
+    }
+
+    /**
+     * 统一过滤 mustToken、按频道名去重、重排 id（id 同时是全局下标，列表位置依赖它）。
+     *
+     * 去重保留列表中靠前的那一个（远程配置的顺序即优先级）；配合 TVSource.filterAlive
+     * 先探测后去重，可以做到「同名的多个源里保留真正能播的那个」。
+     */
+    private fun normalize(source: Map<String, List<TV>>): Map<String, List<TV>> {
+        val listNew = mutableMapOf<String, List<TV>>()
+        val seen = HashSet<String>()
+        var id = 0
+        for ((k, v) in source) {
+            val group = mutableListOf<TV>()
+            for (tv in v) {
+                if (tv.mustToken) {
+                    continue
+                }
+                val key = dedupeKey(tv.title)
+                if (key.isNotEmpty() && !seen.add(key)) {
+                    Log.i(TAG, "duplicate skipped: ${tv.title}")
+                    continue
+                }
+                tv.id = id
+                tv.needToken = false
+                id++
+                group.add(tv)
+            }
+            if (group.size > 0) {
+                listNew[k] = group
+            }
+        }
+        return listNew
+    }
+
+    private val bracketRegex = Regex("""[\[\(（【][^\]\)）】]*[\]\)）】]""")
+    private val qualityRegex =
+        Regex("""(?i)(1080p|720p|576p|480p|360p|4k|8k|uhd|fhd|hd|sd|高清|超清|标清|蓝光|原画)""")
+    private val punctuationRegex = Regex("""[\s\-_.·、/]+""")
+
+    /**
+     * 频道名归一化：忽略画质标记与标点差异，让这些视作同一频道——
+     * 「CCTV-1 (720p)」「CCTV1[1080][S]」「cctv1」去重后只保留第一个。
+     */
+    private fun dedupeKey(title: String): String {
+        var s = title.trim().lowercase()
+        s = bracketRegex.replace(s, "")
+        s = qualityRegex.replace(s, "")
+        s = s.replace("频道", "")
+        s = punctuationRegex.replace(s, "")
+        return s
     }
 
     private fun setup(): Map<String, List<TV>> {
-        var list = mapOf(
+        val raw = mapOf(
             "央视" to listOf(
                 TV(
                     0,
@@ -922,25 +1001,6 @@ object TVList {
             )
         )
 
-        val array = arrayOf("央视", "地方")
-//        list = list.filterKeys { it in array }
-
-        val listNew = mutableMapOf<String, List<TV>>()
-        var id = 0
-        list.forEach { (k, v) ->
-            val group = mutableListOf<TV>()
-            v.forEach { v1 ->
-                if (!v1.mustToken) {
-                    v1.id = id
-                    v1.needToken = false
-                    id++
-                    group.add(v1)
-                }
-            }
-            if (group.size > 0) {
-                listNew[k] = group
-            }
-        }
-        return listNew
+        return normalize(raw)
     }
 }

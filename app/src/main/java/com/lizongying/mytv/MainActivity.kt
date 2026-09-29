@@ -1,5 +1,9 @@
 package com.lizongying.mytv
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -47,8 +51,27 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
     private val delayHideMain: Long = 10000
     private val delayHideSetting: Long = 15000
 
+    /** 断网恢复自愈：监听系统网络可用事件，通知播放器重连 */
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
     init {
         Utils.setRequestListener(this)
+    }
+
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.i(TAG, "network available")
+                PlaybackRecovery.onNetworkRestored()
+            }
+        }
+        try {
+            cm.registerNetworkCallback(NetworkRequest.Builder().build(), callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            Log.e(TAG, "registerNetworkCallback failed", e)
+        }
     }
 
     fun syncTime() {
@@ -616,6 +639,11 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
     override fun onDestroy() {
         super.onDestroy()
         Request.onDestroy()
+        networkCallback?.let {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                ?.unregisterNetworkCallback(it)
+        }
+        networkCallback = null
     }
 
     override fun onRequestFinished(message: String?) {

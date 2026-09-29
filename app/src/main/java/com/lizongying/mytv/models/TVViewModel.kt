@@ -128,8 +128,29 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         _epg.value = p.map { EPG(it.title, formatFTime(it.event_time)) }.toMutableList()
     }
 
+    /**
+     * 当前播放地址。空源频道（视频地址列表为空或下标越界）返回空串，
+     * 由调用方跳过播放——早期实现用 !! 取下标，会抛 IndexOutOfBoundsException 闪退。
+     */
     fun getVideoUrlCurrent(): String {
-        return _videoUrl.value!![_videoIndex.value!!]
+        val urls = _videoUrl.value ?: return ""
+        val index = _videoIndex.value ?: return ""
+        if (urls.isEmpty() || index < 0 || index >= urls.size) {
+            return ""
+        }
+        return urls[index]
+    }
+
+    /**
+     * 轮转到频道内下一个备用源（循环）。返回 true 表示已切换，
+     * 调用方应换新地址重试而不是继续撞同一个坏源。
+     */
+    fun rotateToNextSource(): Boolean {
+        val urls = _videoUrl.value ?: return false
+        if (urls.size < 2) return false
+        val index = _videoIndex.value ?: 0
+        _videoIndex.value = (index + 1) % urls.size
+        return true
     }
 
     companion object {

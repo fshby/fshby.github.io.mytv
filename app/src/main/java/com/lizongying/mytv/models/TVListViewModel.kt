@@ -25,8 +25,16 @@ class TVListViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 按下标取频道。列表重建（远程列表变短）或下标越界时返回 null，
+     * 不要直接 list[id]——那会抛 IndexOutOfBoundsException 导致换台闪退。
+     */
     fun getTVViewModel(id: Int): TVViewModel? {
-        return _tvListViewModel.value?.get(id)
+        val list = _tvListViewModel.value ?: return null
+        if (id < 0 || id >= list.size) {
+            return null
+        }
+        return list[id]
     }
 
     fun setItemPosition(position: Int) {
