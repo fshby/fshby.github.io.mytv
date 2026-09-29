@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我的电视 · fshby 版 - Android TV 直播应用</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #141b33;
+    --accent: #4f8cff;
+    --accent2: #7c5cff;
+    --text: #e8ecf7;
+    --muted: #9aa5c4;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(124,92,255,.25), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(79,140,255,.18), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 24px 64px; }
+
+  header { text-align: center; margin-bottom: 40px; }
+  .logo {
+    width: 84px; height: 84px; border-radius: 20px; margin: 0 auto 18px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 42px; box-shadow: 0 12px 40px rgba(79,140,255,.35);
+  }
+  h1 { font-size: 34px; letter-spacing: 1px; }
+  .sub { color: var(--muted); margin-top: 10px; font-size: 15px; }
+
+  .hero {
+    display: flex; gap: 32px; align-items: center; justify-content: center;
+    background: var(--panel); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 20px; padding: 36px; flex-wrap: wrap;
+  }
+  .hero-info { flex: 1 1 380px; min-width: 300px; }
+  .ver {
+    display: inline-block; padding: 4px 14px; border-radius: 999px;
+    background: rgba(79,140,255,.15); color: #9cc0ff;
+    font-size: 13px; margin-bottom: 14px; border: 1px solid rgba(79,140,255,.35);
+  }
+  .hero-info p { color: var(--muted); line-height: 1.8; font-size: 15px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    margin-top: 22px; padding: 14px 34px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff; text-decoration: none; font-size: 17px; font-weight: 600;
+    box-shadow: 0 8px 28px rgba(79,140,255,.4); transition: transform .15s;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn .size { font-size: 12px; font-weight: 400; opacity: .85; }
+
+  .qr { text-align: center; }
+  .qr img { width: 148px; height: 148px; border-radius: 12px; background: #fff; padding: 8px; }
+  .qr span { display: block; color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+  h2 { font-size: 20px; margin: 44px 0 18px; padding-left: 12px; border-left: 4px solid var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid rgba(255,255,255,.07);
+    border-radius: 14px; padding: 20px;
+  }
+  .card .ico { font-size: 26px; margin-bottom: 10px; }
+  .card b { display: block; margin-bottom: 6px; font-size: 15px; }
+  .card span { color: var(--muted); font-size: 13px; line-height: 1.7; }
+
+  ol.guide { color: var(--muted); line-height: 2.1; font-size: 14.5px; padding-left: 22px; }
+  ol.guide code {
+    background: rgba(79,140,255,.12); color: #9cc0ff;
+    padding: 2px 8px; border-radius: 6px; font-size: 13px;
+  }
+  .changelog { color: var(--muted); font-size: 14px; line-height: 2; }
+  .changelog li { margin-left: 20px; }
+  footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top: 56px; }
+  footer a { color: #9cc0ff; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">📺</div>
+    <h1>我的电视 <span style="color:var(--accent)">fshby 版</span></h1>
+    <div class="sub">Android TV / 电视盒子 直播应用 · 干净频道列表 · 智能容错 · 自主升级</div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-info">
+      <div class="ver">当前版本 v2.2.0 · 2026-09-29</div>
+      <p>
+        基于 my-tv 深度定制的电视直播客户端。启动即自动拉取在线频道列表，
+        探测剔除死源、同名去重，多源自动容错切换，彻底告别"打开一半频道是坏的"。
+      </p>
+      <a class="btn" href="download/2.2.0/my-tv-2.2.0.apk" download>
+        ⬇ 下载 APK <span class="size">armeabi-v7a / arm64-v8a</span>
+      </a>
+    </div>
+    <div class="qr">
+      <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https://fshby.github.io/fshby.github.io.mytv/"
+           alt="扫码下载" onerror="this.style.display='none'">
+      <span>手机扫码访问本页</span>
+    </div>
+  </div>
+
+  <h2>功能亮点</h2>
+  <div class="grid">
+    <div class="card"><div class="ico">🌐</div><b>在线频道列表</b>
+      <span>远程 m3u8/JSON 双格式自动识别，启动秒开缓存列表，后台静默刷新。</span></div>
+    <div class="card"><div class="ico">🩺</div><b>死源探测剔除</b>
+      <span>并发探测全部频道源，不可用频道直接从列表消失；每 30 分钟自动重探。</span></div>
+    <div class="card"><div class="ico">♻️</div><b>同名频道去重</b>
+      <span>画质标记、标点差异智能归一，同一频道只保留一个，列表清爽。</span></div>
+    <div class="card"><div class="ico">🛡️</div><b>多源容错</b>
+      <span>播放失败自动轮换频道内备用源，瞬时网络抖动静默自愈，观看无感。</span></div>
+    <div class="card"><div class="ico">⚡</div><b>直播追赶</b>
+      <span>落后直播边缘自动轻微加速追回，短窗口 IPTV 源不再周期性卡顿。</span></div>
+    <div class="card"><div class="ico">🔄</div><b>应用自升级</b>
+      <span>设置页一键检查更新，直接从本站下载新版本安装，无需电脑。</span></div>
+  </div>
+
+  <h2>安装说明</h2>
+  <ol class="guide">
+    <li>下载 APK 到 U 盘（或手机下载后通过局域网传到盒子）。</li>
+    <li>电视/盒子上打开 <code>设置 → 安全</code>，允许<code>安装未知来源应用</code>。</li>
+    <li>用自带文件管理器打开 APK 安装，应用名<b>「我的电视」</b>。</li>
+    <li>首次启动会自动拉取在线频道列表，稍等几秒即可观看。</li>
+  </ol>
+
+  <h2>更新日志</h2>
+  <ul class="changelog">
+    <li><b>v2.2.0</b> — 多源自动容错、换台去抖、断网自愈、直播追赶、OkHttp 数据源、30 分钟周期重探、自升级地址切换到本站。</li>
+    <li><b>v2.1.x</b> — 全新 v2.1.8 界面基座、远程频道列表、频道去重与死源过滤、播放缓冲调优。</li>
+  </ul>
+
+  <footer>
+    自升级接口：<code>update/version.json</code> · 页面部署于 GitHub Pages ·
+    <a href="https://github.com/fshby/fshby.github.io.mytv">仓库地址</a>
+  </footer>
+</div>
+</body>
+</html>
