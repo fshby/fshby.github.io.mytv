@@ -42,6 +42,15 @@ class PlayerFragment : Fragment() {
     /** 瞬时源错误的静默重试计数，成功播放后归零 */
     private var transientRetries = 0
 
+    /**
+     * 本次换台内已轮换过的备用源次数。
+     *
+     * 多源频道合并后 rotateToNextSource 是取模循环，若不做上限，
+     * 当频道内所有源都播不了时会 A→B→A→B 无限轮换，永远走不到错误提示。
+     * 上限 = 源数量 - 1；只有显式换台（play()）才允许重置。
+     */
+    private var sourceRotations = 0
+
     /** 换台去抖：连续按键只让最后一次真正起播 */
     private val playHandler = Handler(Looper.getMainLooper())
     private var pendingPlay: Runnable? = null
@@ -58,7 +67,9 @@ class PlayerFragment : Fragment() {
             ViewTreeObserver.OnGlobalLayoutListener {
             @OptIn(UnstableApi::class)
             override fun onGlobalLayout() {
-                playerView!!.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                // 布局回调可能在 Fragment 视图已销毁后才到，playerView 会变成空引用
+                val pv = playerView ?: return
+                pv.viewTreeObserver.removeOnGlobalLayoutListener(this)
 
                 // OkHttp 数据源：连接池复用 + 更快的失败判定（5s 连接超时），
                 // 并允许 http<->https 跨协议重定向（IPTV 源常见）
@@ -102,9 +113,9 @@ class PlayerFragment : Fragment() {
                     .setLoadControl(loadControl)
                     .build()
 
-                playerView!!.player = exoPlayer
-                playerView!!.player?.playWhenReady = true
-                playerView!!.player?.addListener(object : Player.Listener {
+                pv.player = exoPlayer
+                pv.player?.playWhenReady = true
+                pv.player?.addListener(object : Player.Listener {
                     override fun onVideoSizeChanged(videoSize: VideoSize) {
                         // 视图已销毁时 measuredHeight 可能取不到，直接放弃这次布局调整
                         val height = playerView?.measuredHeight ?: return
@@ -157,8 +168,15 @@ class PlayerFragment : Fragment() {
                             return
                         }
                         val vm = tvViewModel
-                        if (vm != null && vm.rotateToNextSource()) {
-                            Log.i(TAG, "failover to next source of ${vm.getTV().title}")
+                        val sources = vm?.videoUrl?.value?.size ?: 0
+                        if (vm != null && sources > 1 &&
+                            sourceRotations < sources - 1 && vm.rotateToNextSource()
+                        ) {
+                            sourceRotations++
+                            Log.i(
+                                TAG,
+                                "failover ${sourceRotations}/${sources - 1} of ${vm.getTV().title}"
+                            )
                             transientRetries = 0
                             startPlay(vm)
                             return
@@ -195,7 +213,7 @@ class PlayerFragment : Fragment() {
                 }
             }
         }
-        (activity as MainActivity).fragmentReady(TAG)
+        (activity as? MainActivity)?.fragmentReady(TAG)
         return _binding!!.root
     }
 
@@ -203,6 +221,7 @@ class PlayerFragment : Fragment() {
     fun play(tvViewModel: TVViewModel) {
         this.tvViewModel = tvViewModel
         transientRetries = 0
+        sourceRotations = 0
         // 换台去抖：连续按键/换台时取消上一次未起播的请求，350ms 内只播最后一次
         pendingPlay?.let { playHandler.removeCallbacks(it) }
         val r = Runnable {
@@ -287,9 +306,8 @@ class PlayerFragment : Fragment() {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (playerView != null) {
-            playerView!!.player?.release()
-        }
+        // 视图可能已先行销毁，这里不能再对 playerView 做非空断言
+        playerView?.player?.release()
     }
 
     override fun onDestroyView() {

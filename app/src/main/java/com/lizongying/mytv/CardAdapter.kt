@@ -73,15 +73,26 @@ class CardAdapter(
     }
 
     override fun onBindViewHolder(viewHolder: ViewHolder, position: Int) {
-        val item = tvListViewModel.getTVViewModel(position)
-
-        val tvViewModel = item as TVViewModel
+        // 列表被探测过滤 / 远程重建时会整体换血，RecyclerView 仍可能以旧的下标回调绑定，
+        // 此时 getTVViewModel 返回 null。原实现 `item as TVViewModel` 对 null 强转
+        // 会抛 TypeCastException 直接闪退，这里降级成一张空卡片，下一个绑定周期自会修正。
+        val tvViewModel = tvListViewModel.getTVViewModel(position)
         val cardView = viewHolder.view
         cardView.tag = tvViewModel
+        if (tvViewModel == null) {
+            cardView.onFocusChangeListener = null
+            cardView.setOnClickListener(null)
+            cardView.setOnTouchListener(null)
+            cardView.setOnKeyListener(null)
+            viewHolder.binding.title.text = ""
+            viewHolder.binding.desc.text = ""
+            viewHolder.binding.icon.setImageDrawable(null)
+            return
+        }
 
         val onFocusChangeListener = View.OnFocusChangeListener { view, hasFocus ->
             if (hasFocus) {
-                listener?.onItemHasFocus(item)
+                listener?.onItemHasFocus(tvViewModel)
                 focused = cardView
 
                 if (focusable) {
@@ -96,7 +107,7 @@ class CardAdapter(
         cardView.onFocusChangeListener = onFocusChangeListener
 
         cardView.setOnClickListener { _ ->
-            listener?.onItemClicked(item)
+            listener?.onItemClicked(tvViewModel)
         }
 
         var downX = 0f
@@ -167,26 +178,24 @@ class CardAdapter(
 
     fun updateEPG() {
         for (i in 0 until recyclerView.childCount) {
-            val childView = recyclerView.getChildAt(i)
+            val childView = recyclerView.getChildAt(i) ?: continue
 
-            val viewHolder = recyclerView.getChildViewHolder(childView) as ViewHolder
+            // 子 View 可能是别的 ViewHolder 类型（列表换血瞬间），强转失败不该崩
+            val viewHolder = recyclerView.getChildViewHolder(childView) as? ViewHolder ?: continue
+            val tvViewModel = viewHolder.view.tag as? TVViewModel ?: continue
 
-            if (viewHolder.view.tag != null && viewHolder.view.tag is TVViewModel) {
-                val tvViewModel = viewHolder.view.tag as TVViewModel
+            val epg = tvViewModel.epg.value?.filter { it.beginTime < Utils.getDateTimestamp() }
 
-                val epg = tvViewModel.epg.value?.filter { it.beginTime < Utils.getDateTimestamp() }
-
-                if (!epg.isNullOrEmpty()) {
-                    val title = epg.last().title
-                    if (viewHolder.binding.desc.text != title) {
-                        viewHolder.binding.desc.text = title
-                        Log.i(TAG, "updateEPG $title")
-                    }
-                } else {
-                    if (viewHolder.binding.desc.text != "") {
-                        viewHolder.binding.desc.text = ""
-                        Log.i(TAG, "updateEPG")
-                    }
+            if (!epg.isNullOrEmpty()) {
+                val title = epg.last().title
+                if (viewHolder.binding.desc.text != title) {
+                    viewHolder.binding.desc.text = title
+                    Log.i(TAG, "updateEPG $title")
+                }
+            } else {
+                if (viewHolder.binding.desc.text != "") {
+                    viewHolder.binding.desc.text = ""
+                    Log.i(TAG, "updateEPG")
                 }
             }
         }

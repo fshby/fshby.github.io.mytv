@@ -26,7 +26,7 @@ class ChannelFragment : Fragment() {
         savedInstanceState: Bundle?
     ): View {
         _binding = ChannelBinding.inflate(inflater, container, false)
-        _binding!!.root.visibility = View.GONE
+        binding.root.visibility = View.GONE
 
         val application = requireActivity().applicationContext as MyTVApplication
 
@@ -44,14 +44,15 @@ class ChannelFragment : Fragment() {
         binding.main.layoutParams.width = application.shouldWidthPx()
         binding.main.layoutParams.height = application.shouldHeightPx()
 
-        (activity as MainActivity).fragmentReady(TAG)
+        (activity as? MainActivity)?.fragmentReady(TAG)
         return binding.root
     }
 
     fun show(tvViewModel: TVViewModel) {
+        val b = _binding ?: return
         handler.removeCallbacks(hideRunnable)
         handler.removeCallbacks(playRunnable)
-        binding.content.text = (tvViewModel.getTV().id.plus(1)).toString()
+        b.content.text = (tvViewModel.getTV().id.plus(1)).toString()
         view?.visibility = View.VISIBLE
         handler.postDelayed(hideRunnable, delay)
     }
@@ -60,12 +61,20 @@ class ChannelFragment : Fragment() {
         if (channelCount > 1) {
             return
         }
+        val b = _binding ?: return
+        val next = "${this.channel}$channel".toIntOrNull()
+        if (next == null) {
+            // 非数字输入：丢弃这次缓冲，避免 toInt() 抛 NumberFormatException
+            this.channel = 0
+            channelCount = 0
+            return
+        }
         channelCount++
-        this.channel = "${this.channel}$channel".toInt()
+        this.channel = next
         handler.removeCallbacks(hideRunnable)
         handler.removeCallbacks(playRunnable)
         if (channelCount < 2) {
-            binding.content.text = "${this.channel}"
+            b.content.text = "${this.channel}"
             view?.visibility = View.VISIBLE
             handler.postDelayed(playRunnable, delay)
         } else {
@@ -87,22 +96,28 @@ class ChannelFragment : Fragment() {
     }
 
     private val hideRunnable = Runnable {
-        binding.content.text = ""
+        _binding?.let { it.content.text = "" }
         view?.visibility = View.GONE
         channel = 0
         channelCount = 0
     }
 
     private val playRunnable = Runnable {
-        (activity as MainActivity).play(channel - 1)
-        binding.content.text = ""
+        val index = channel - 1
+        val act = activity as? MainActivity
+        _binding?.let { it.content.text = "" }
         view?.visibility = View.GONE
         channel = 0
         channelCount = 0
+        act?.play(index)
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
+        // handler 不属于视图生命周期，延迟任务可能在 onDestroyView 之后才到，
+        // 那时 binding 已被置空。这里主动摘除回调，避免对已销毁视图取值而闪退。
+        handler.removeCallbacks(hideRunnable)
+        handler.removeCallbacks(playRunnable)
         _binding = null
     }
 

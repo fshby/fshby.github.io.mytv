@@ -138,6 +138,7 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
     /** 按当前 TVList 重建全部分组行（可重复调用） */
     private fun buildRows() {
         val context = context ?: return
+        if (_binding == null) return
         val content = binding.content
         content.removeAllViews()
         rowList.clear()
@@ -175,7 +176,7 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             itemBinding.items.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     super.onScrolled(recyclerView, dx, dy)
-                    (activity as MainActivity).mainActive()
+                    (activity as? MainActivity)?.mainActive()
                 }
             })
 
@@ -397,8 +398,13 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             val index = TVList.list.values.flatten().indexOfFirst { it.title == currentTitle }
             if (index >= 0) {
                 itemPosition = index
-                tvListViewModel.setItemPosition(itemPosition)
+            } else {
+                // 正在看的频道被探测判死并从列表里剔除：旧下标在新列表里会指向「另一个频道」，
+                // 直接续播就是无提示换台（播错台）。这里回落到 0 号频道并说明。
+                Log.w(TAG, "current '$currentTitle' removed by probe, fallback to 0")
+                itemPosition = 0
             }
+            tvListViewModel.setItemPosition(itemPosition)
         }
         Log.i(TAG, "rows rebuilt, ${tvListViewModel.size()} channels in ${System.currentTimeMillis() - t0}ms")
         // fragmentReady 的启动计数早已用完，重建后需主动触发一次换台续播
@@ -411,8 +417,8 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             for (i in rowList) {
                 if (i is RecyclerView) {
                     i.layoutManager = GridLayoutManager(context, 6)
-                    i.layoutParams.height =
-                        application.dp2Px(110 * (((i.adapter as CardAdapter).getItemCount() + 6 - 1) / 6) + 5)
+                    val count = adapterOf(i)?.getItemCount() ?: continue
+                    i.layoutParams.height = application.dp2Px(110 * ((count + 6 - 1) / 6) + 5)
                 }
             }
         } else {
@@ -426,16 +432,25 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         }
     }
 
+    /**
+     * 行容器上的卡片适配器。
+     *
+     * buildRows 里是「先把行加进 rowList（入列）、随后才给 items 赋 adapter」，
+     * 中间若被重入（列表重建 / onResumeFragments / 遥控回调）就会拿到 adapter == null。
+     * 原实现一律 `adapter as CardAdapter` 强转，null 场合直接 TypeError 闪退。
+     */
+    private fun adapterOf(v: View): CardAdapter? = (v as? RecyclerView)?.adapter as? CardAdapter
+
     override fun onKey(keyCode: Int): Boolean {
         if (this.isHidden) {
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    (activity as MainActivity).onKey(keyCode)
+                    (activity as? MainActivity)?.onKey(keyCode)
                     return true
                 }
 
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    (activity as MainActivity).onKey(keyCode)
+                    (activity as? MainActivity)?.onKey(keyCode)
                     return true
                 }
             }
@@ -447,15 +462,18 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         val row = tvViewModel.getRowPosition()
 
         for (i in rowList) {
-            if (i.tag as Int != row) {
-                ((i as RecyclerView).adapter as CardAdapter).focusable = false
-                (i.adapter as CardAdapter).clear()
+            // tag 在 buildRows 里随后才被赋成 Int，重建重入时可能还是 null
+            if (i.tag as? Int != row) {
+                adapterOf(i)?.apply {
+                    focusable = false
+                    clear()
+                }
             } else {
-                ((i as RecyclerView).adapter as CardAdapter).focusable = true
+                adapterOf(i)?.focusable = true
             }
         }
 
-        (activity as MainActivity).mainActive()
+        (activity as? MainActivity)?.mainActive()
     }
 
     override fun onItemClicked(tvViewModel: TVViewModel) {
@@ -484,8 +502,9 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         if (rowPosition < 0 || rowPosition >= rowList.size) {
             return
         }
-        rowList[rowPosition].post {
-            when (val layoutManager = (rowList[rowPosition] as RecyclerView).layoutManager) {
+        val row = rowList[rowPosition]
+        row.post {
+            when (val layoutManager = (row as? RecyclerView)?.layoutManager) {
                 is GridLayoutManager -> {
                     layoutManager.findViewByPosition(
                         itemPosition
@@ -503,8 +522,16 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
 
     fun check(tvViewModel: TVViewModel): Boolean {
         val title = tvViewModel.getTV().title
-        val videoUrl = tvViewModel.videoIndex.value?.let { tvViewModel.videoUrl.value?.get(it) }
-        if (videoUrl == null || videoUrl == "") {
+        // 列表重建 / 空源频道（videoUrl 为空，下标为 -1）都可能让取址越界，
+        // 原实现直接 get(it) 会抛 IndexOutOfBoundsException
+        val urls = tvViewModel.videoUrl.value
+        val index = tvViewModel.videoIndex.value ?: 0
+        if (urls == null || index < 0 || index >= urls.size) {
+            Log.e(TAG, "$title videoUrl is empty")
+            return false
+        }
+        val videoUrl = urls[index]
+        if (videoUrl == "") {
             Log.e(TAG, "$title videoUrl is empty")
             return false
         }
@@ -606,16 +633,18 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             Log.i(TAG, "toPosition $rowPosition $itemPosition")
             for (i in rowList) {
                 if (i.tag as? Int == rowPosition) {
-                    ((i as RecyclerView).adapter as CardAdapter).updateEPG()
-                    (i.adapter as CardAdapter).focusable = true
-                    (i.adapter as CardAdapter).toPosition(itemPosition)
+                    adapterOf(i)?.apply {
+                        updateEPG()
+                        focusable = true
+                        toPosition(itemPosition)
+                    }
                     break
                 }
             }
         } else {
             view?.post {
                 for (i in rowList) {
-                    ((i as RecyclerView).adapter as CardAdapter).focusable = false
+                    adapterOf(i)?.focusable = false
                 }
             }
         }
