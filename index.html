@@ -78,6 +78,10 @@
   }
   .changelog { color: var(--muted); font-size: 14px; line-height: 2; }
   .changelog li { margin-left: 20px; }
+  .changelog h3 { color: var(--text); font-size: 15px; margin: 22px 0 6px; }
+  .changelog h3:first-child { margin-top: 0; }
+  .changelog h3 .date { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .changelog li b { color: #9cc0ff; font-weight: 600; }
   footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top: 56px; }
   footer a { color: #9cc0ff; text-decoration: none; }
 </style>
@@ -92,12 +96,12 @@
 
   <div class="hero">
     <div class="hero-info">
-      <div class="ver">当前版本 v2.2.0 · 2026-09-29</div>
+      <div class="ver">当前版本 v2.3.0 · 2026-09-30</div>
       <p>
         基于 my-tv 深度定制的电视直播客户端。启动即自动拉取在线频道列表，
         探测剔除死源、同名去重，多源自动容错切换，彻底告别"打开一半频道是坏的"。
       </p>
-      <a class="btn" href="download/2.2.0/my-tv-2.2.0.apk" download>
+      <a class="btn" href="download/2.3.0/my-tv-2.3.0.apk" download>
         ⬇ 下载 APK <span class="size">armeabi-v7a / arm64-v8a</span>
       </a>
     </div>
@@ -133,14 +137,31 @@
   </ol>
 
   <h2>更新日志</h2>
-  <ul class="changelog">
-    <li><b>v2.2.0</b> — 多源自动容错、换台去抖、断网自愈、直播追赶、OkHttp 数据源、30 分钟周期重探、自升级地址切换到本站。</li>
-    <li><b>v2.1.x</b> — 全新 v2.1.8 界面基座、远程频道列表、频道去重与死源过滤、播放缓冲调优。</li>
-  </ul>
+  <div class="changelog">
+    <h3>v2.3.0 <span class="date">2026-09-30</span></h3>
+    <ul>
+      <li><b>频道质量</b> — 死源探测增加内容校验（媒体 Content-Type / <code>#EXTM3U</code> / TS 同步字节），剔除"返回 200 空页面"的伪活源，实测约占判活源 <b>20%</b>；探测读响应体限量 2KB，修复无 Range 支持的直播流导致的 OOM 崩溃循环；缓存直接保存过滤后的列表，启动秒开即为干净列表。</li>
+      <li><b>播放流畅度</b> — 同名多源合并（同一频道的多条线路不再只留第一条）；探测记录建连+首字节耗时，保留最快 2 条线路并按耗时升序，默认播放最快线路；主源失败自动轮换备用线路（有上限，全线路失败才提示错误）；DNS 缓存（TTL 5 分钟 / 上限 256 条）+ 302 落地地址自适应固化；缓冲参数按短窗口源收紧（起播 2 秒 / 重缓冲 1.5 秒 / 关闭后台缓冲）；切后台由 stop 改 pause，从桌面返回秒回画面。</li>
+      <li><b>启动速度</b> — 启动闸门与网络请求解耦，断网也能进入界面；频道列表预加载 + 缓存条件请求（ETag / Last-Modified + 内容签名），列表未变化时整段跳过重探；探测延后 20 秒启动、并发 12→6；M3U 解析热路径重写。</li>
+      <li><b>界面</b> — 远程频道图标优先复用内置官方台标，按 CCTV 编号建键匹配（CCTV-4K / 8K 与 CCTV-4 正确区分）。</li>
+      <li><b>稳定性</b> — 加固列表重建期适配器空值强转、空源频道下标越界、视图销毁后延迟回调等 6 处闪退点；多源轮换加上限，避免坏源无限轮换。</li>
+    </ul>
+
+    <h3>v2.2.0 <span class="date">2026-09-29</span></h3>
+    <ul>
+      <li>多源自动容错、换台去抖、断网自愈、直播追赶、OkHttp 数据源、30 分钟周期重探、自升级地址切换到本站。</li>
+    </ul>
+
+    <h3>v2.1.x <span class="date">2026-09-29</span></h3>
+    <ul>
+      <li>全新 v2.1.8 界面基座、远程频道列表、频道去重与死源过滤、播放缓冲调优。</li>
+    </ul>
+  </div>
 
   <footer>
     自升级接口：<code>update/version.json</code> · 页面部署于 GitHub Pages ·
-    <a href="https://github.com/fshby/fshby.github.io.mytv">仓库地址</a>
+    <a href="https://github.com/fshby/my-tv">代码仓库</a> ·
+    <a href="https://github.com/fshby/fshby.github.io.mytv">本站仓库</a>
   </footer>
 </div>
 </body>
