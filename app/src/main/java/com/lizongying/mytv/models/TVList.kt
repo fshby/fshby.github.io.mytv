@@ -121,11 +121,27 @@ object TVList {
     )
 
     /**
+     * CCTV 编号键：CCTV7 国防军事 / CCTV-7 / cctv7 → cctv7；CCTV5+ → cctv5+；CCTV4K → cctv4k。
+     * 编号频道的后缀五花八门（国防军事、电视剧……），靠后缀白名单必然遗漏，
+     * 直接以编号建键才可靠，同时避免 4K/8K 被画质词规则误删而与普通频道撞键。
+     */
+    private val cctvIdRegex = Regex("""(?i)^cctv[\s\-]*(\d+)\s*(k|plus|\+)?""")
+
+    /**
      * 比 dedupeKey 更宽松的频道键，专门用于把内置官方图标匹配到远程频道。
-     * CCTV1 综合 / CCTV-1 / cctv1 共享键 "cctv1"；东方卫视 / 东方卫视高清 共享 "东方"。
+     * CCTV7 国防军事 / CCTV-7 / cctv7 共享键 "cctv7"；东方卫视 / 东方卫视高清 共享 "东方"。
      */
     private fun logoKey(title: String): String {
-        var s = dedupeKey(title)
+        val t = title.trim()
+        cctvIdRegex.find(t)?.let { m ->
+            val suffix = when (m.groupValues[2].lowercase()) {
+                "k" -> "k"
+                "" -> ""
+                else -> "+"
+            }
+            return "cctv" + m.groupValues[1] + suffix
+        }
+        var s = dedupeKey(t)
         s = logoSuffixRegex.replace(s, "")
         return s
     }
