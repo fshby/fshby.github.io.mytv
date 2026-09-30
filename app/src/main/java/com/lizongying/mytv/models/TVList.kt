@@ -36,6 +36,32 @@ object TVList {
     }
 
     /**
+     * 内置表同名频道的官方图标（dedupeKey -> logo）。
+     * 远程/本地列表的频道名归一化后命中内置表时，优先使用内置图标——
+     * 官方图源比 IPTV 列表自带的第三方 logo 更稳定、更统一。
+     */
+    private val builtinLogos: Map<String, Any> by lazy {
+        val m = mutableMapOf<String, Any>()
+        rawList().forEach { (_, v) ->
+            v.forEach { tv -> m[logoKey(tv.title)] = tv.logo }
+        }
+        m
+    }
+
+    /**
+     * 把内置表官方图标补丁打到任意频道分组上。
+     * 调用方：缓存保存前、normalize 内部。不破坏多源结构。
+     */
+    fun patchBuiltinLogos(groups: Map<String, List<TV>>): Map<String, List<TV>> {
+        groups.forEach { (_, v) ->
+            v.forEach { tv ->
+                builtinLogos[logoKey(tv.title)]?.let { tv.logo = it }
+            }
+        }
+        return groups
+    }
+
+    /**
      * 统一过滤 mustToken、按频道名去重、重排 id（id 同时是全局下标，列表位置依赖它）。
      *
      * 去重保留列表中靠前的那一个（远程配置的顺序即优先级）；配合 TVSource.filterAlive
@@ -52,6 +78,8 @@ object TVList {
                     continue
                 }
                 val key = dedupeKey(tv.title)
+                // 频道名命中内置表时，图标优先用官方内置版
+                builtinLogos[logoKey(tv.title)]?.let { tv.logo = it }
                 if (key.isNotEmpty() && !seen.add(key)) {
                     Log.i(TAG, "duplicate skipped: ${tv.title}")
                     continue
@@ -86,7 +114,24 @@ object TVList {
         return s
     }
 
-    private fun setup(): Map<String, List<TV>> {
+    /** 图标匹配时允许去掉「综合/财经/综艺/中文国际/体育/电影/纪录/卫视/频道/台」等通用后缀 */
+    private val logoSuffixRegex = Regex(
+        """(综合|财经|综艺|中文国际|体育|电影|纪录|科教|戏曲|社会与法|新闻|少儿|音乐|奥林匹克|农业农村|体育赛事|超高清|香港|澳门|台湾|卫视|频道|台)$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * 比 dedupeKey 更宽松的频道键，专门用于把内置官方图标匹配到远程频道。
+     * CCTV1 综合 / CCTV-1 / cctv1 共享键 "cctv1"；东方卫视 / 东方卫视高清 共享 "东方"。
+     */
+    private fun logoKey(title: String): String {
+        var s = dedupeKey(title)
+        s = logoSuffixRegex.replace(s, "")
+        return s
+    }
+
+    /** 内置默认频道表（央视频接口拉流，接口已失效，仅作无外部列表时的兜底与官方图标来源） */
+    private fun rawList(): Map<String, List<TV>> {
         val raw = mapOf(
             "央视" to listOf(
                 TV(
@@ -1001,6 +1046,8 @@ object TVList {
             )
         )
 
-        return normalize(raw)
+        return raw
     }
+
+    private fun setup(): Map<String, List<TV>> = normalize(rawList())
 }

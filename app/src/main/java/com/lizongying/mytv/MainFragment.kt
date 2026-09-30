@@ -293,6 +293,8 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             }
             // 后台探测各源可用性：剔除异常频道，同名频道保留探测通过的那个
             val alive = withContext(Dispatchers.IO) { TVSource.filterAlive(parsed) }
+            // 图标优先用内置官方版（不破坏多源结构）
+            TVList.patchBuiltinLogos(alive)
             if (TVList.applyRemote(alive)) {
                 Log.i(TAG, "unreachable channels filtered")
                 rebuildRows()
