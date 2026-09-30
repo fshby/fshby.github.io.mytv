@@ -46,6 +46,9 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
 
     private var lastVideoUrl = ""
 
+    /** 上次「系统时间异常」提示的时间：周期刷新每 30 分钟失败一次，别反复弹 */
+    private var lastClockWarnAt = 0L
+
     private lateinit var application: MyTVApplication
 
     private lateinit var gestureDetector: GestureDetector
@@ -323,7 +326,11 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
                     if (canReuse) meta.lastModified else "",
                 )
             }
-            if (res.text == null && !res.notModified) return@launch
+            if (res.text == null && !res.notModified) {
+                // 列表拉不下来：判断是不是系统时钟把 HTTPS 掐死了，是就明确告诉用户
+                warnClockIfSuspected(res.certError)
+                return@launch
+            }
 
             val sig = res.text?.let { TVSource.contentSig(it) }.orEmpty()
             val unchanged = res.notModified ||
@@ -390,8 +397,56 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         }
     }
 
-    private fun rebuildRows() {
-        if (_binding == null) {
+    /**
+     * 远程列表拉取失败后，判断是不是「系统时钟不在证书有效期内」导致的，并提示用户校准。
+     *
+     * 现场还原：IPTV 盒子出厂或长期断网后时钟常停在 2000 年代，而列表服务器
+     * 用的是 3 个月期的 Let's Encrypt 证书 → 证书被判「尚未生效 / 已过期」→
+     * 整条 HTTPS 链路失败（拿不到任何响应体），App 只能退回内置列表，
+     * 用户看到的是满屏播不了的央视频道，却完全不知道原因在系统时间上。
+     *
+     * App 无权修改系统时钟，能做且该做的就是明确告知。
+     *
+     * 判据有两条，取「或」：
+     *  1. 证书异常本身（[certError]，零成本，但只在 HTTPS 失败时出现）；
+     *  2. 主动探测的实际偏斜量（[TVSource.clockSkewMs]，走纯 HTTP 读 `Date` 头，
+     *     不依赖 TLS，因此即使证书已经握手失败也照样能测出来）。
+     * 两条都不成立（例如只是断网）时不提示，避免误报。
+     */
+    private fun warnClockIfSuspected(certError: Boolean) {
+        val ctx = context ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastClockWarnAt < CLOCK_WARN_MIN_INTERVAL_MS) return
+        lifecycleScope.launch {
+            val skew = withContext(Dispatchers.IO) { TVSource.clockSkewMs() }
+            val bad = skew?.let { kotlin.math.abs(it) > CLOCK_SKEW_LIMIT_MS } ?: certError
+            if (!bad) {
+                Log.w(TAG, "remote list failed, clock looks ok (skew=$skew certError=$certError)")
+                return@launch
+            }
+            lastClockWarnAt = now
+            Log.w(TAG, "clock skew suspected: skewMs=$skew certError=$certError")
+            val how = when {
+                skew == null -> "证书校验失败"
+                skew > 0L -> "比标准时间快约 ${formatSkew(skew)}"
+                else -> "比标准时间慢约 ${formatSkew(-skew)}"
+            }
+            Toast.makeText(
+                ctx,
+                "频道列表更新失败：系统时间$how。请在「设置 → 日期和时间」中校准后重新打开应用。",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    /** 把毫秒偏斜量写成「N 天 / N 小时 / N 分钟」 */
+    private fun formatSkew(ms: Long): String = when {
+        ms >= 86_400_000L -> "${ms / 86_400_000L} 天"
+        ms >= 3_600_000L -> "${ms / 3_600_000L} 小时"
+        else -> "${(ms / 60_000L).coerceAtLeast(1L)} 分钟"
+    }
+
+    private fun rebuildRows() {        if (_binding == null) {
             return
         }
         // 列表被过滤/重建后下标会漂移，先记住当前频道名，重建后按名字找回
@@ -687,5 +742,14 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
          * 超过这个时间说明隔了很久没开机，必须重探以保证死源被剔除。
          */
         private const val CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000L
+
+        /**
+         * 判定「系统时间不对」的偏斜阈值。证书窗口是 3 个月，偏一天就可能踩到边界，
+         * 这里取 1 天；NTP 正常同步的盒子偏差都在秒级，不会误报。
+         */
+        private const val CLOCK_SKEW_LIMIT_MS = 24 * 60 * 60 * 1000L
+
+        /** 两次时钟提示之间的最小间隔：周期刷新失败很频繁，别让提示变成干扰 */
+        private const val CLOCK_WARN_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000L
     }
 }

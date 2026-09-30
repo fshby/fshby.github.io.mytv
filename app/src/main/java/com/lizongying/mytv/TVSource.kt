@@ -20,12 +20,16 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.net.URL
+import java.security.cert.CertPathValidatorException
+import java.security.cert.CertificateException
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /**
  * 远程 / 本地频道列表加载器。
@@ -35,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *  2. JSON —— 以 { 开头，可完整表达 TV 的全部字段（pid / programType / needToken 等）
  *
  * 加载优先级（见 TVList.load / MainFragment）：
- *  本地文件 > 上次远程结果缓存 > 内置 TVList
+ *  本地文件 > 上次远程结果缓存 > 随包内置快照 > 内置 TVList
  */
 object TVSource {
 
@@ -59,6 +63,16 @@ object TVSource {
 
     /** 远程拉取结果的缓存文件名（位于 cacheDir） */
     private const val CACHE_NAME = "tvlist.cache"
+
+    /**
+     * 随包内置的频道列表快照（app/src/main/assets）。
+     *
+     * 兜底场景：首次安装还没有缓存，或者远程列表因为网络 / 系统时钟问题拉不下来。
+     * 此时若直接回退内置表，用户看到的是央视频接口源——而该接口现已全面失效，
+     * 满屏都是「认证状态错误」；换成这份 IPTV 快照，离线开机也能直接看。
+     * 快照随版本发布刷新，联网时会被远程列表覆盖（优先级见 [loadSync]）。
+     */
+    private const val SNAPSHOT_ASSET = "tvlist.snapshot.m3u"
 
     private val client by lazy {
         OkHttpClient.Builder()
@@ -103,8 +117,10 @@ object TVSource {
     // ---------------------------------------------------------------- 加载
 
     /**
-     * 同步加载本地文件或缓存，用于启动首屏（毫秒级，不阻塞用户）。
-     * @return 解析结果；null 表示没有可用外部列表，应继续使用内置列表。
+     * 同步加载本地文件、缓存或内置快照，用于启动首屏（毫秒级，不阻塞用户）。
+     *
+     * 优先级：本地文件（用户手动 push，最高）> 上次远程缓存 > 随包内置快照。
+     * @return 解析结果；null 表示三者都不可用，应回退内置表。
      */
     fun loadSync(context: Context): Map<String, List<TV>>? {
         localFile(context)?.let { f ->
@@ -123,7 +139,28 @@ object TVSource {
                 return it
             }
         }
+
+        // 内置快照兜底：既没有本地文件也没有缓存（首次安装、缓存被清、或
+        // 上次启动时远程就拉不下来因而没能写缓存）时，用随包快照而不是内置表。
+        loadSnapshot(context)?.let { return it }
         return null
+    }
+
+    /**
+     * 读取随包内置的频道列表快照。
+     *
+     * 不参与探测：快照是「离线/异常时的可用列表」，联网后远程列表会正常覆盖它；
+     * 对快照跑一遍全量探测既慢（几百条源）又没有意义——用户此刻多半正在看第一个频道。
+     */
+    fun loadSnapshot(context: Context): Map<String, List<TV>>? {
+        val t0 = System.currentTimeMillis()
+        val bytes = runCatching {
+            context.assets.open(SNAPSHOT_ASSET).use { it.readBytes() }
+        }.getOrNull() ?: return null
+        return runCatching { parse(decode(bytes), "") }.getOrNull()?.takeIf { it.isNotEmpty() }?.let {
+            Log.i(TAG, "load snapshot -> ${it.size} groups (${elapsed(t0)}ms)")
+            it
+        }
     }
 
     private fun elapsed(from: Long) = System.currentTimeMillis() - from
@@ -136,6 +173,11 @@ object TVSource {
         val notModified: Boolean = false,
         val etag: String = "",
         val lastModified: String = "",
+        /**
+         * 失败原因是 TLS 证书校验 —— 几乎必然是系统时钟不在证书有效期内。
+         * 调用方据此提示用户校准时间，而不是让用户以为「App 坏了」。
+         */
+        val certError: Boolean = false,
     )
 
     /**
@@ -146,6 +188,7 @@ object TVSource {
      */
     fun fetch(url: String, etag: String = "", lastModified: String = ""): FetchResult {
         if (url.isEmpty()) return FetchResult()
+        var certError = false
         return runCatching {
             val builder = Request.Builder().url(url)
             if (etag.isNotEmpty()) builder.header("If-None-Match", etag)
@@ -171,7 +214,79 @@ object TVSource {
                     lastModified = resp.header("Last-Modified").orEmpty(),
                 )
             }
-        }.onFailure { Log.e(TAG, "fetch error", it) }.getOrDefault(FetchResult())
+        }.onFailure {
+            certError = isCertificateError(it)
+            Log.e(TAG, "fetch error (cert=$certError)", it)
+        }.getOrDefault(FetchResult(certError = certError))
+    }
+
+    /**
+     * 判断异常是否由 TLS 证书校验失败引起。
+     *
+     * 系统时间不在证书有效期内时，Java/Android 会抛出
+     * `CertificateNotYetValidException` / `CertificateExpiredException`（均为
+     * [CertificateException] 子类），通常被包在 `SSLHandshakeException: Chain validation failed`
+     * 里。异常链长度有限，逐层找即可。
+     */
+    private fun isCertificateError(e: Throwable?): Boolean {
+        var t = e
+        var depth = 0
+        while (t != null && depth++ < 12) {
+            if (t is CertificateException ||
+                t is CertPathValidatorException ||
+                t is SSLHandshakeException ||
+                t is SSLPeerUnverifiedException
+            ) {
+                return true
+            }
+            if (t.cause === t) break
+            t = t.cause
+        }
+        return false
+    }
+
+    /**
+     * 校准用时间源：纯 HTTP、响应必带 `Date` 头，国内可达。
+     * 顺序即优先级，第一个拿到的就用。
+     */
+    private val TIME_SOURCES = listOf(
+        "http://www.baidu.com/",
+        "http://www.qq.com/",
+    )
+
+    /**
+     * 时钟探测客户端：**不跟随重定向**。
+     *
+     * 重定向目标基本都是 HTTPS，正好是这里要绕开的东西——证书校验失败时，
+     * 跟随重定向等于又把请求掐死一次。只读第一跳响应头即可。
+     */
+    private val clockClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .build()
+    }
+
+    /**
+     * 系统时钟偏斜探测：返回「本机时间 − 服务器时间」（毫秒，正数表示本机偏快）；
+     * 所有时间源都不可达时返回 null（无法判断，调用方不应据此下结论）。
+     *
+     * 为什么不能用业务接口来判断：`https://mytemple.fshby.cc` 用的是 Let's Encrypt
+     * 三个月期证书，时钟一偏，**请求在 TLS 握手阶段就失败了，根本拿不到任何响应**。
+     * 而 HTTP 请求不过 TLS，`Date` 头照样可读——这是时钟坏掉时唯一还可信的途径。
+     *
+     * 只在远程列表拉取失败后才调用一次，成功路径上没有额外开销。
+     */
+    fun clockSkewMs(): Long? {
+        for (url in TIME_SOURCES) {
+            val server = runCatching {
+                clockClient.newCall(Request.Builder().url(url).head().build())
+                    .execute().use { it.headers.getDate("Date") }
+            }.getOrNull() ?: continue
+            return System.currentTimeMillis() - server.time
+        }
+        return null
     }
 
     // ---------------------------------------------------------------- 缓存元信息

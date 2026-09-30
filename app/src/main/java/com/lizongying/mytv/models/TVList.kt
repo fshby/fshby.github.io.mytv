@@ -21,7 +21,10 @@ object TVList {
     /** 预加载任务：在 Application.onCreate 里启动，与 Activity / Fragment 创建并行 */
     private var loadJob: Deferred<Map<String, List<TV>>>? = null
 
-    /** 启动时同步调用：优先外部文件 / 缓存（毫秒级首屏），否则回退内置表 */
+    /**
+     * 启动时同步调用：优先外部文件 / 缓存 / 随包内置快照（毫秒级首屏），
+     * 三者都没有才回退内置表。
+     */
     @Synchronized
     fun load(context: Context): Map<String, List<TV>> {
         if (list.isEmpty()) {
