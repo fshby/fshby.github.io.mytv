@@ -1,13 +1,14 @@
-# 我的电视
+# 我的电视 · fshby 定制版
 
-> **本仓库为 `fshby` 维护的定制分支 `ui-v218`**，基于官方 v2.1.8 界面基座，另加远程频道列表与播放链路优化。
-> 最新发布：**v2.3.0** ｜ [下载 / 自升级站点](https://fshby.github.io/fshby.github.io.mytv/) ｜ 安装包名 `com.fshby.mytv`（可与官方版并存安装）
+> 基于 [lizongying/my-tv](https://github.com/lizongying/my-tv) v2.1.8 界面基座深度定制。  
+> 适配国内电视 / 电视盒子，支持远程 m3u8 频道列表、自动探测去重、多源容错与独立自升级。  
+> 最新发布：**v2.3.0** ｜ [下载 APK / 在线升级](https://fshby.github.io/fshby.github.io.mytv/) ｜ 安装包名 `com.fshby.mytv`（可与官方版并存安装）
 
 ## 版本简介 · v2.3.0
 
 | 方向 | 修改点与优化项 |
 | --- | --- |
-| **频道质量** | 死源探测增加内容校验（媒体 Content-Type / `#EXTM3U` / TS 同步字节 0x47），剔除「返回 200 空页面」的伪活源（实测约占判活源 20%）；探测读响应体限量 2KB，修复部分服务器无视 `Range` 返回无限直播流导致的 OOM 崩溃循环；缓存直接保存过滤后的频道列表，启动秒开即为干净列表。 |
+| **频道质量** | 死源探测增加内容校验（媒体 Content-Type / `#EXTM3U` / TS 同步字节 0x47），剔除「返回 200 空页面」的伪活源；探测读响应体限量 2KB，修复无 `Range` 支持的直播流导致的 OOM 崩溃循环；缓存直接保存过滤后的频道列表，启动秒开即为干净列表。 |
 | **播放流畅度** | 同名多源合并（同一频道的多条线路不再只保留第一条）；探测记录建连 + 首字节耗时，保留最快 2 条线路并按耗时升序，默认播放最快线路；主源失败自动轮换频道内备用线路（轮换有上限，全线路失败才提示错误）；DNS 缓存（TTL 5 分钟 / 上限 256 条）+ 302 落地地址自适应固化；缓冲参数按短窗口 IPTV 源收紧（起播 2 秒 / 重缓冲 1.5 秒 / 关闭后台缓冲）；切后台由 `stop()` 改为 `pause()` 保活。 |
 | **启动速度** | 启动闸门与网络请求解耦（断网也能进入界面）；频道列表预加载 + 缓存条件请求（ETag / Last-Modified + 内容签名），列表未变化时整段跳过重新探测；探测延后 20 秒启动、并发 12→6；M3U 解析热路径重写。 |
 | **界面** | 远程频道图标优先复用内置官方台标，按 CCTV 编号建键匹配（CCTV-4K / 8K 与 CCTV-4 正确区分）。 |
@@ -15,32 +16,52 @@
 
 完整历史见 [HISTORY.md](./HISTORY.md)。
 
----
+## 下载与安装
 
-电视直播软件，安装即可使用
+1. 访问 [fshby.github.io/fshby.github.io.mytv](https://fshby.github.io/fshby.github.io.mytv/) 下载最新 APK。
+2. 拷贝到 U 盘，插入电视 / 盒子安装；或开启 ADB 后用命令安装：
+   ```shell
+   adb install my-tv-2.3.0.apk
+   ```
+3. 首次启动会自动拉取在线频道列表，稍等 3–8 秒即可观看。
+4. 进入 **设置页 → 检查更新**，应用会读取 [update/version.json](https://fshby.github.io/fshby.github.io.mytv/update/version.json)，检测到新版后可直接下载并覆盖安装。
 
-## 使用
+## 界面截图
 
-1. 下载
-    * [github](https://github.com/lizongying/my-tv/releases/)
-    * [gitee](https://gitee.com/lizongying/my-tv/releases/)
-2. 安裝
-    * U盘安装
-    * 小米电视可以使用小米电视助手进行安装
-    * 如电视可以启用ADB，也可以通过ADB进行安装
-       ```shell
-       adb install my-tv.apk
-       ```
+![凤凰中文全屏播放](./screenshots/ui_fullscreen.png)
 
-![image](./screenshots/img_3.png)
-![image](./screenshots/img_2.png)
-![image](./screenshots/img_1.png)
+![CCTV2 财经频道](./screenshots/ui_playback.png)
 
-## 更新日志
+## 遥控说明
 
-[更新日志](./HISTORY.md)
+![遥控器按键说明](./screenshots/control.jpg)
 
-## TODO
+| 按键 | 功能 |
+| --- | --- |
+| 上 / 下 | 上一个 / 下一个频道 |
+| 左 / 右 | 打开 / 关闭频道列表 与 设置 |
+| OK（中间圆键） | 确认选中 |
+| 返回 | 关闭菜单 / 关闭帮助 |
+| 菜单键（≡） | 打开帮助 |
+| 音量 +/- | 调节音量 |
+| 数字键 | 快速跳转到对应频道号 |
+
+## 自定义频道源
+
+- 自定义列表可放到盒子的 `/sdcard/Android/data/com.fshby.mytv/files/` 目录，支持：
+  - `tvlist.m3u` / `tvlist.json` — 本地静态列表
+  - `tvlist.remote` — 一行 URL，覆盖默认远程源
+- 运行缓存：`cache/tvlist.cache`（探测过滤后的 M3U，用于秒开）与 `cache/tvlist.cache.meta`（缓存元信息）。
+
+## 赞赏支持
+
+如果觉得这个定制版对你有帮助，可以请我喝杯咖啡：
+
+| 微信赞赏码 | 支付宝 |
+| --- | --- |
+| ![微信赞赏码](./screenshots/zanshangMa.webp) | ![支付宝](./screenshots/zfb.jpg) |
+
+## 已知待办
 
 * 音量不同
 * 大湾区卫视、广东4k超高清、广东珠江、三沙卫视、翡翠
@@ -60,7 +81,3 @@
 本项目可能随时终止，请大家谨慎使用，建议使用官方渠道进行观看。
 
 本项目使用的部分代码、图片、文字等资源来源于网络，如有侵权，请联系删除。
-
-## 赞赏
-
-![image](./screenshots/appreciate.jpeg)
