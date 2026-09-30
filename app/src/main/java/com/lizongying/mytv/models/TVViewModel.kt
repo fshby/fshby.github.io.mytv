@@ -79,8 +79,8 @@ class TVViewModel(private var tv: TV) : ViewModel() {
 
     init {
         _videoUrl.value = tv.videoUrl
-        // 直连多源频道：下标 0 就是探测阶段实测最快、写回 videoUrl 首位的那个源，
-        // 换台即用最优源（原实现取 lastIndex，播的是最没被验证的源，属于「劣先」）。
+        // 直连多源频道：下标 0 就是探测阶段按「实测分片吞吐 ÷ 实时码率需求」排序后的
+        // 首选源（同时兼顾窗口大小，小窗口源降权），换台即用最优源。
         // 央视频 / 凤凰等接口拉流频道（pid 非空）地址是播放时逐个追加的，仍取最新那个。
         _videoIndex.value = if (tv.pid.isEmpty()) 0 else tv.videoUrl.lastIndex
     }

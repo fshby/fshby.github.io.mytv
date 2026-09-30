@@ -9,6 +9,7 @@ import android.view.WindowManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.multidex.MultiDex
+import com.lizongying.mytv.api.SourceProfiles
 import com.lizongying.mytv.models.MyViewModel
 import com.lizongying.mytv.models.TVList
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,9 @@ class MyTVApplication : Application() {
         // （逐条正则）实测 2s 以上，提前后与 Activity / Fragment 创建完全并行，
         // 不再压在首屏路径上
         appScope.launch {
+            // 源画像（目标时长 / 窗口 / 实测吞吐）要赶在第一次换台之前就位，
+            // 否则首次起播会拿不到按源计算的偏移
+            SourceProfiles.preload(this@MyTVApplication)
             val t0 = System.currentTimeMillis()
             TVList.load(this@MyTVApplication)
             Log.i(TAG, "channel list preloaded in ${System.currentTimeMillis() - t0}ms")

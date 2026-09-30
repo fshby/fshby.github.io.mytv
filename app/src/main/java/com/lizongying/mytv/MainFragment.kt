@@ -17,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.lizongying.mytv.api.SourceProfiles
 import com.lizongying.mytv.api.YSP
 import com.lizongying.mytv.databinding.MenuBinding
 import com.lizongying.mytv.databinding.RowBinding
@@ -369,6 +370,10 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             // 同时记录原文签名 + 探测时间戳，下次启动据此判断能否整段跳过。
             withContext(Dispatchers.IO) {
                 TVSource.saveCache(context, TVSource.toM3U(alive))
+                // 源画像（目标时长 / 窗口 / 实测吞吐）与列表一起落盘并裁剪：
+                // 下次启动若命中「列表没变 + 结论新鲜」而整段跳过探测，
+                // 起播偏移依然能按源计算，不会退化成有时生效有时不生效
+                SourceProfiles.save(context, alive.values.flatten().flatMap { it.videoUrl })
                 val now = System.currentTimeMillis()
                 TVSource.writeCacheMeta(
                     context,

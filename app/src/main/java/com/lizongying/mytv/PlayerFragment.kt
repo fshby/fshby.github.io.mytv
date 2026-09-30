@@ -25,7 +25,9 @@ import androidx.media3.exoplayer.source.BehindLiveWindowException
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.lizongying.mytv.api.DnsCache
+import com.lizongying.mytv.api.MyLoadErrorHandlingPolicy
 import com.lizongying.mytv.api.RedirectMemory
+import com.lizongying.mytv.api.SourceProfiles
 import com.lizongying.mytv.databinding.PlayerBinding
 import com.lizongying.mytv.models.TVViewModel
 import okhttp3.OkHttpClient
@@ -88,6 +90,9 @@ class PlayerFragment : Fragment() {
                 val mediaSourceFactory = DefaultMediaSourceFactory(
                     DefaultDataSource.Factory(requireContext(), httpFactory)
                 )
+                    // 自定义加载错误策略：分片级 404/502 用 300ms 短退避快速消化，
+                    // 而不是默认那套 0/1/2s 长退避（一片坏 = 冻结约 3 秒）
+                    .setLoadErrorHandlingPolicy(MyLoadErrorHandlingPolicy())
 
                 val renderersFactory = DefaultRenderersFactory(requireContext())
                     .setEnableDecoderFallback(true)
@@ -96,12 +101,15 @@ class PlayerFragment : Fragment() {
                 // 否则重缓冲期间窗口滑走，会反复触发 BehindLiveWindowException
                 val loadControl = DefaultLoadControl.Builder()
                     .setBufferDurationsMs(
-                        /* minBufferMs = */ 15000,
-                        /* maxBufferMs = */ 45000,
+                        // 实测 44% 的源整个窗口只有 2~3 片（窗口中位 25s），
+                        // 原 15s 的 minBuffer 加载器根本达不到，只会持续满速抢带宽，
+                        // 在弱盒子上与首帧、频道探测互相争抢
+                        /* minBufferMs = */ 8000,
+                        /* maxBufferMs = */ 30000,
                         /* bufferForPlaybackMs = */ 2000,
-                        // 这个值直接决定「每次重缓冲黑屏多久」：原来 3000 意味着
-                        // 每次抖动都要等满 3 秒。短窗口 IPTV 源上降到 1500 明显更跟手。
-                        /* bufferForPlaybackAfterRebufferMs = */ 1500,
+                        // 原来 1500 意味着「补到 1.5s 就恢复播放」，几乎必然立刻再抖一次，
+                        // 而目标偏移每次只 +500ms，恢复得很慢；3 秒刚好越过一个分片边界
+                        /* bufferForPlaybackAfterRebufferMs = */ 3000,
                     )
                     .setPrioritizeTimeOverSizeThresholds(true)
                     // 直播不会倒回已播内容，关掉回退缓冲可省一大块内存
@@ -243,17 +251,32 @@ class PlayerFragment : Fragment() {
         }
         val mime = guessMimeType(url)
 
+        // 起播目标偏移按「源画像」动态计算（探测阶段实测出目标时长与窗口长度）。
+        //
+        // 原实现把所有源统一钉成 3 秒：短窗口源（窗口仅 2~3 片）上，起播点会被
+        // HlsMediaSource 回退到分片起点，等于手上只有 1 片缓冲，且刚好贴在窗口最
+        // 不可靠的一端（最新片刚发布、最旧片常被 CDN 清掉）。
+        // 画像未知（本地列表、或本次启动直接复用缓存没跑探测）时返回 0 —— 此时
+        // **不设置**，完全交给 media3 自己的默认（3 × 目标时长），行为与上游一致。
+        val targetOffsetMs = SourceProfiles.get(url)?.targetOffsetMs ?: 0L
+        Log.i(
+            TAG,
+            "play ${tvViewModel.getTV().title} offset=" +
+                    if (targetOffsetMs > 0L) "${targetOffsetMs}ms" else "media3默认"
+        )
+
         playerView?.player?.run {
             setMediaItem(
                 MediaItem.Builder()
                     .setUri(url)
                     // 带参数或无 .m3u8 后缀的地址依赖扩展名推断会失败，需显式指定
                     .apply { if (mime != null) setMimeType(mime) }
-                    // 略落后直播边缘 3 秒：压后太多会反复滑出短窗口源的直播边缘（BehindLiveWindow）
-                    // 追赶参数：落后时轻微加速（≤1.08x）主动追回边缘，而不是等滑出窗口后打断式恢复
+                    // 追赶参数：落后目标偏移时轻微加速（≤1.08x）主动追回，而不是等滑出
+                    // 窗口后打断式恢复；降速下限 0.97x 作为「离边缘太近」时的刹车。
+                    // 注意这里的追赶目标就是上面那个偏移，不再是直播边缘本身。
                     .setLiveConfiguration(
                         MediaItem.LiveConfiguration.Builder()
-                            .setTargetOffsetMs(3000)
+                            .apply { if (targetOffsetMs > 0L) setTargetOffsetMs(targetOffsetMs) }
                             .setMinPlaybackSpeed(0.97f)
                             .setMaxPlaybackSpeed(1.08f)
                             .build()

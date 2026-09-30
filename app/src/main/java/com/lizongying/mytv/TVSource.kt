@@ -6,6 +6,8 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.lizongying.mytv.api.SourceProfile
+import com.lizongying.mytv.api.SourceProfiles
 import com.lizongying.mytv.models.ProgramType
 import com.lizongying.mytv.models.TV
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +18,7 @@ import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
 import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -556,6 +559,8 @@ object TVSource {
 
     // ---------------------------------------------------------------- 可用性探测
 
+    private const val UA = "okhttp/3.14.9"
+
     /** 探测用客户端：短超时，避免个别死源拖慢整体 */
     private val probeClient by lazy {
         OkHttpClient.Builder()
@@ -565,50 +570,90 @@ object TVSource {
             .build()
     }
 
-    /** 头部预取的字节数——m3u8 列表很小，取一小段足够判断存活 */
-    private const val PROBE_RANGE = "bytes=0-2047"
-
-    /** 单个地址是否可用：HTTP 成功且响应内容确实是媒体（m3u8 文本 / TS 字节流） */
-    fun isAlive(url: String): Boolean = probeUrl(url) != null
-
     /**
-     * 探测单个地址，返回「建连 + 首字节」耗时（毫秒）；不可用返回 null。
+     * 吞吐实测专用客户端。
      *
-     * 耗时同时被用于多源排序：实测同频道不同源之间能差 5~70 倍，
-     * 换台默认用最快的那个源，比任何缓存优化都值。
+     * 读超时故意设得比预算更短：慢源读到 1.6s 就中断，[measureSpeed] 用
+     * 「已读字节 ÷ 已用时间」照样算出速率——**慢本身就是结论**，不必等它读完。
      */
-    fun probeUrl(url: String): Long? {
-        if (!isPlayableUrl(url)) return null
-        val t0 = System.nanoTime()
-        return runCatching {
-            val req = Request.Builder()
-                .url(url)
-                .header("Range", PROBE_RANGE)
-                .header("User-Agent", "okhttp/3.14.9")
-                .get()
-                .build()
-            probeClient.newCall(req).execute().use { resp ->
-                if (resp.code !in 200..206) return@use null
-                val ct = resp.header("Content-Type")?.lowercase().orEmpty()
-                if (ct.contains("mpegurl") || ct.contains("mp2t")) return@use costMs(t0)
-                // 严禁 body.bytes()：部分服务器无视 Range 头返回完整直播流，
-                // 全量读取会无限吞内存直接 OOM（真机崩溃循环实证）。只限量读头部 2KB。
-                val head = readHead(resp, PROBE_BYTES) ?: return@use null
-                if (isMediaPayload(ct, head)) costMs(t0) else null
-            }
-        }.getOrDefault(null)
+    private val speedClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(SPEED_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .followRedirects(true)
+            .build()
     }
 
-    private fun costMs(fromNano: Long): Long = (System.nanoTime() - fromNano) / 1_000_000
+    /**
+     * 预读上限。实测 5 片 playlist ≈ 700B、20 片 ≈ 2.5KB，4KB 已能覆盖绝大多数全文；
+     * 没读全（[Head.truncated]）时再补抓一次 [PLAYLIST_MAX_BYTES]。
+     */
+    private const val PROBE_BYTES = 4096
 
-    /** 限量预读头部字节数 */
-    private const val PROBE_BYTES = 2048
+    private const val PROBE_RANGE = "bytes=0-${PROBE_BYTES - 1}"
+
+    /** 预读被截断时补抓 playlist 的上限 */
+    private const val PLAYLIST_MAX_BYTES = 32 * 1024
+
+    /** 吞吐实测：单次最多读多少字节 / 最多花多少毫秒 */
+    private const val SPEED_BYTES = 384 * 1024
+    private const val SPEED_BUDGET_MS = 1_000L
+    private const val SPEED_READ_TIMEOUT_MS = 1_600L
 
     /** 一个频道凑够几个可用源就不再往下测（留 1 个主用 + 1 个备用足够） */
     private const val PROBE_SOURCES_ENOUGH = 2
 
     /** 单频道最多测几个源：多源频道（CCTV1 有 20 条）全测会让探测时间失控 */
     private const val PROBE_SOURCES_MAX = 6
+
+    /** 进入吞吐实测与排序的候选源上限：测太多会把探测时间拖成几分钟 */
+    private const val PROBE_CANDIDATES = 3
+
+    /** 单个地址是否可用：HTTP 成功且响应内容确实是媒体（m3u8 文本 / TS 字节流） */
+    fun isAlive(url: String): Boolean = probeHead(url) != null
+
+    /**
+     * 探测单个地址，返回「建连 + 首字节」耗时（毫秒）；不可用返回 null。
+     *
+     * 注意：这个耗时**不再**用于多源排序（playlist 建连快慢与分片吞吐无关，
+     * 实测同一列表内两个源能差 500 倍），排序改由 [measureSpeed] 的实测速率决定。
+     * 它现在只用于日志与「同一档位时」的次级比较。
+     */
+    fun probeUrl(url: String): Long? = probeHead(url)?.costMs
+
+    /** 探测结果：建连耗时 + 预读到的头部字节 */
+    private class Head(val costMs: Long, val body: ByteArray, val truncated: Boolean)
+
+    /**
+     * 探测单个地址：HTTP 成功 + 内容确实是媒体，返回建连耗时与预读头部。
+     *
+     * 严禁 body.bytes()：部分服务器无视 Range 头返回完整直播流，
+     * 全量读取会无限吞内存直接 OOM（真机崩溃循环实证）。只限量读头部。
+     *
+     * 顺带把预读到的字节留作 playlist 解析用（大多数 playlist 一次就够），
+     * 不给每条源多添加一次网络往返。
+     */
+    private fun probeHead(url: String): Head? {
+        if (!isPlayableUrl(url)) return null
+        val t0 = System.nanoTime()
+        return runCatching {
+            val req = Request.Builder()
+                .url(url)
+                .header("Range", PROBE_RANGE)
+                .header("User-Agent", UA)
+                .get()
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (resp.code !in 200..206) return@use null
+                val ct = resp.header("Content-Type")?.lowercase().orEmpty()
+                val head = readHead(resp, PROBE_BYTES) ?: return@use null
+                if (!isMediaPayload(ct, head)) return@use null
+                Head(costMs(t0), head, head.size >= PROBE_BYTES)
+            }
+        }.getOrDefault(null)
+    }
+
+    private fun costMs(fromNano: Long): Long = (System.nanoTime() - fromNano) / 1_000_000
 
     /** 从响应体限量读取前 [max] 字节后立即关闭；流提前结束则返回实际读到的内容 */
     private fun readHead(resp: okhttp3.Response, max: Int): ByteArray? {
@@ -625,6 +670,183 @@ object TVSource {
             input.close()
         }
         return buf.copyOf(off)
+    }
+
+    // ---------------------------------------------------------------- HLS 结构画像
+
+    /** 一个 playlist 的结构信息；分片地址已补全为绝对地址 */
+    private class HlsInfo(
+        /** 分片列表所在 playlist 的地址（master 会下钻一层，可能与频道地址不同） */
+        val mediaUrl: String,
+        val targetDurationMs: Long,
+        val windowMs: Long,
+        val segments: Int,
+        val segUrls: List<String>,
+        val segDurations: List<Double>,
+        /** playlist 声明的平均码率 KB/s；0 表示未声明 */
+        val declaredKbps: Long,
+    )
+
+    private val bandwidthRegex = Regex("""BANDWIDTH=(\d+)""")
+
+    /**
+     * 解析 playlist 文本，抽出「目标时长 / 窗口长度 / 分片数 / 分片地址 / 声明码率」。
+     *
+     * 遇到 master playlist（含 `#EXT-X-STREAM-INF`）时按 BANDWIDTH 选最高档下钻一层——
+     * 实测 209 个可用源里有 27 个是 master，而分片地址与 `#EXT-X-TARGETDURATION`
+     * 只存在于 media playlist。下钻最多一层，避免被自引用地址套住。
+     */
+    private fun parseHls(text: String, baseUrl: String, depth: Int = 0): HlsInfo? {
+        if (!text.contains("#EXTM3U")) return null
+
+        if (text.contains("#EXT-X-STREAM-INF")) {
+            if (depth >= 1) return null
+            var bestVariant: String? = null
+            var bestBw = -1L
+            var pendingBw = -1L
+            for (raw in text.lineSequence()) {
+                val line = raw.trim()
+                if (line.startsWith("#EXT-X-STREAM-INF")) {
+                    pendingBw =
+                        bandwidthRegex.find(line)?.groupValues?.get(1)?.toLongOrNull() ?: -1L
+                } else if (line.isNotEmpty() && !line.startsWith("#")) {
+                    if (pendingBw > bestBw) {
+                        bestBw = pendingBw
+                        bestVariant = line
+                    }
+                    pendingBw = -1L
+                }
+            }
+            val variant = bestVariant ?: return null
+            val variantUrl = resolveUrl(variant, baseUrl)
+            val sub = fetchText(variantUrl, PLAYLIST_MAX_BYTES) ?: return null
+            return parseHls(sub, variantUrl, depth + 1)
+        }
+
+        var targetMs = 0L
+        var windowMs = 0L
+        var declared = 0L
+        val segUrls = ArrayList<String>(32)
+        val segDurations = ArrayList<Double>(32)
+        for (raw in text.lineSequence()) {
+            val line = raw.trim()
+            when {
+                line.startsWith("#EXT-X-TARGETDURATION:") -> {
+                    val sec = line.substringAfter(':').trim().toDoubleOrNull()
+                    if (sec != null && sec > 0) targetMs = (sec * 1000).toLong()
+                }
+                // 平均分片码率（kbps）-> KB/s
+                line.startsWith("#EXT-X-BITRATE:") -> {
+                    val kbps = line.substringAfter(':').trim().toLongOrNull() ?: 0L
+                    if (kbps > 0) declared = kbps / 8
+                }
+                line.startsWith("#EXTINF:") -> {
+                    // #EXTINF:4.000, 或 #EXTINF:4.000,标题
+                    val sec =
+                        line.substringAfter(':').substringBefore(',').trim().toDoubleOrNull() ?: 0.0
+                    segDurations.add(sec)
+                    windowMs += (sec * 1000).toLong()
+                }
+                line.isEmpty() || line.startsWith("#") -> Unit
+                else -> segUrls.add(resolveUrl(line, baseUrl))
+            }
+        }
+        if (segUrls.isEmpty()) return null
+        if (targetMs <= 0L) {
+            // 没写 TARGETDURATION 就退而用分片平均时长，至少不让偏移推导失去依据
+            val avg = segDurations.filter { it > 0 }.average()
+            if (!avg.isNaN()) targetMs = (avg * 1000).toLong()
+        }
+        // 分片数只算「真正占时间」的那些：0 时长分片既不能作为起播位置，
+        // 也不该让一个实际只有 2 片的窗口被当成 3 片从而逃过 tinyWindow 降权
+        val realSegments = segDurations.count { it > 0.0 }
+        return HlsInfo(baseUrl, targetMs, windowMs, realSegments, segUrls, segDurations, declared)
+    }
+
+    /** 取回 playlist 全文（限量）；失败返回 null */
+    private fun fetchText(url: String, max: Int): String? = runCatching {
+        val req = Request.Builder()
+            .url(url)
+            .header("Range", "bytes=0-${max - 1}")
+            .header("User-Agent", UA)
+            .get()
+            .build()
+        probeClient.newCall(req).execute().use { resp ->
+            if (resp.code !in 200..206) return@use null
+            readHead(resp, max)?.let { decode(it) }
+        }
+    }.getOrDefault(null)
+
+    /** 由探测头部（必要时补抓）得到 HLS 结构 */
+    private fun hlsInfo(url: String, head: Head): HlsInfo? {
+        val text = if (head.truncated) {
+            fetchText(url, PLAYLIST_MAX_BYTES) ?: return null
+        } else {
+            decode(head.body)
+        }
+        return parseHls(text, url)
+    }
+
+    /** 实测速率结果 */
+    private class Speed(val kbps: Long, val totalBytes: Long)
+
+    /**
+     * 限量下载一个分片，返回实测速率（KB/s）与分片总字节数。
+     *
+     * 只读 [SPEED_BYTES] 或最多花 [SPEED_BUDGET_MS]。慢源会在时间预算内被截断，
+     * 这时「已读字节 ÷ 已用时间」依然诚实地反映了它追不上实时码率这个事实。
+     *
+     * [Speed.totalBytes] 用来推算实时码率需求：服务器支持 Range 时回 206，
+     * 此时 Content-Length 只是本次区间长度，必须改从 `Content-Range: a-b/总长` 取总长。
+     */
+    private fun measureSpeed(segUrl: String): Speed {
+        if (!isPlayableUrl(segUrl)) return Speed(0L, 0L)
+        var read = 0
+        var fullBytes = 0L
+        var bodyStartNs = System.nanoTime()
+        try {
+            val req = Request.Builder()
+                .url(segUrl)
+                .header("Range", "bytes=0-${SPEED_BYTES - 1}")
+                .header("User-Agent", UA)
+                .get()
+                .build()
+            speedClient.newCall(req).execute().use { resp ->
+                if (resp.code !in 200..206) return Speed(0L, 0L)
+                val contentRange = resp.header("Content-Range")
+                fullBytes = contentRange?.substringAfterLast('/')?.trim()?.toLongOrNull() ?: 0L
+                if (fullBytes <= 0L) {
+                    fullBytes = resp.header("Content-Length")?.toLongOrNull() ?: 0L
+                }
+                val input = resp.body?.byteStream() ?: return Speed(0L, fullBytes)
+                val buf = ByteArray(16 * 1024)
+                bodyStartNs = System.nanoTime()
+                try {
+                    while (read < SPEED_BYTES) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        read += n
+                        if ((System.nanoTime() - bodyStartNs) / 1_000_000 >= SPEED_BUDGET_MS) break
+                    }
+                } finally {
+                    input.close()
+                }
+            }
+        } catch (e: IOException) {
+            // 读超时 / 连接中断：已读到的字节依旧能反映速率，不丢弃
+        }
+        if (read <= 0) return Speed(0L, fullBytes)
+        val ms = ((System.nanoTime() - bodyStartNs) / 1_000_000).coerceAtLeast(1L)
+        return Speed(read.toLong() * 1000 / ms / 1024, fullBytes)
+    }
+
+    /** 探测候选源：结构 + 实测质量，用于频道内排序 */
+    private class Candidate(val url: String, val costMs: Long, val info: HlsInfo) {
+        var kbps = 0L
+        var demandKbps = 0L
+
+        /** 排序用的画像，在吞吐实测之后填充 */
+        lateinit var profile: SourceProfile
     }
 
     /**
@@ -706,12 +928,17 @@ object TVSource {
     /**
      * 探测单个频道的多个源。返回 true 表示至少一个源可用。
      *
-     * 与原实现的区别：
-     *  - 记录每个源「建连 + 首字节」的实测耗时，按耗时升序写回 videoUrl ——
-     *    换台默认用最快源（TVViewModel 初始下标 0），故障时轮换到次快源；
-     *  - 只保留探测通过的源（死源留在列表里毫无价值，还会让 failover 白撞一次）；
-     *  - 但不会无脑测完 20 个源：凑够 [PROBE_SOURCES_ENOUGH] 个可用源就停，
-     *    单个频道最多测 [PROBE_SOURCES_MAX] 个，避免全量探测时间失控。
+     * 两轮真机实测后收敛下来的流程：
+     *  1. 对最多 [PROBE_CANDIDATES] 个候选做**结构画像**（目标时长 / 窗口 / 分片数）；
+     *  2. 再对候选做**限量吞吐实测**，用「下载速率 ÷ 实时码率需求」定序 ——
+     *     原来拿 playlist 建连耗时刻画流畅度是错的，实测同一列表内两个源能差 500 倍，
+     *     playlist 快的那个分片可能只有 61KB/s；
+     *  3. 窗口过小的源（≤2 片 / ≤8s）降到后面：这类源无论如何调参都只剩 ≤1 片余量；
+     *  4. 只保留排序后的前 [PROBE_SOURCES_ENOUGH] 条，并把画像写入 [SourceProfiles]，
+     *     供 PlayerFragment 推算起播偏移；
+     *  5. 解析不出 HLS 结构、但确实过得了存活校验的源（直连 TS / 渐进式流）作为兜底，
+     *     只在 HLS 名额有剩时补在末尾——这类源无法画像，能播但排不出优劣。
+     *     **不能因为解析不出 playlist 就丢源**：若一个频道的源全属这类，整条频道会消失。
      *
      * 阻塞式，调用方在 IO 线程。
      */
@@ -722,22 +949,93 @@ object TVSource {
         val urls = tv.videoUrl
         if (urls.isEmpty()) return false
 
-        val alive = ArrayList<Pair<String, Long>>(4)
+        val cands = ArrayList<Candidate>(PROBE_CANDIDATES)
+        // 非 HLS 但确实是媒体的源（直连 MPEG-TS / 渐进式流）：解析不出分片结构，
+        // 无法画像与排序，但**能播**。留作兜底，否则「所有源都解析不出 playlist」
+        // 的频道会被整条剔除——那是比「播得不够顺」严重得多的回归。
+        val fallbacks = ArrayList<Pair<String, Long>>(4)
         var probed = 0
         for (u in urls) {
             if (probed >= PROBE_SOURCES_MAX) break
             probed++
-            val cost = probeUrl(u) ?: continue
-            alive.add(u to cost)
-            if (alive.size >= PROBE_SOURCES_ENOUGH) break
+            val head = probeHead(u) ?: continue
+            val info = hlsInfo(u, head)
+            if (info == null) {
+                fallbacks.add(u to head.costMs)
+                continue
+            }
+            cands.add(Candidate(u, head.costMs, info))
+            if (cands.size >= PROBE_CANDIDATES) break
         }
-        if (alive.isEmpty()) {
-            // 不逐条打日志：一次全量探测有 600+ 个死源，
-            // 逐条 Log 在弱盒子上本身就是可观开销
-            return false
+        if (cands.isEmpty()) {
+            // 一个 HLS 源都没有：退回「按建连耗时排序」的老办法，保住频道
+            if (fallbacks.isEmpty()) {
+                // 不逐条打日志：一次全量探测有几百个死源，
+                // 逐条 Log 在弱盒子上本身就是可观开销
+                return false
+            }
+            tv.videoUrl = fallbacks.sortedBy { it.second }
+                .take(PROBE_SOURCES_ENOUGH)
+                .map { it.first }
+            return true
         }
-        alive.sortBy { it.second }
-        tv.videoUrl = alive.map { it.first }
+
+        for (c in cands) {
+            val segUrls = c.info.segUrls
+            val segDurations = c.info.segDurations
+            // 取「次新片」：正是起播点之后最先被消费到的那一片，最能代表换台瞬间的真实体验。
+            // 跳过 0 时长分片（读它没有任何意义）
+            val usable = segDurations.indices.filter { segDurations[it] > 0.0 }
+            val i = if (usable.size >= 2) usable[usable.size - 2] else -1
+            val durSec = if (i >= 0) segDurations[i] else 0.0
+            val speed = if (i >= 0) measureSpeed(segUrls[i]) else Speed(0L, 0L)
+            c.kbps = speed.kbps
+            c.demandKbps = when {
+                speed.totalBytes > 0L && durSec > 0.5 ->
+                    (speed.totalBytes / 1024.0 / durSec).toLong()
+                // 服务器不回 Content-Length（chunked / 无视 Range）时退回 playlist 声明的码率
+                else -> c.info.declaredKbps
+            }
+            c.profile = SourceProfile(
+                targetDurationMs = c.info.targetDurationMs,
+                windowMs = c.info.windowMs,
+                segments = c.info.segments,
+                kbps = c.kbps,
+                demandKbps = c.demandKbps,
+                // 按真实分片边界算起播偏移，随画像一起落盘（见 SourceProfile.targetOffsetFor）
+                targetOffsetMs = SourceProfile.targetOffsetFor(c.info.segDurations),
+            )
+        }
+
+        cands.sortWith(Comparator { a, b ->
+            val pa = a.profile
+            val pb = b.profile
+            when {
+                // 1) 窗口正常的源优先
+                pa.tinyWindow != pb.tinyWindow -> if (pa.tinyWindow) 1 else -1
+                else -> {
+                    // 2) 实测富余倍数大的优先；算不出需求时按中性 1.0，
+                    //    不因为「测不出需求」而冤枉一个可能没问题的源
+                    val ha = pa.headroom.let { if (it > 0f) it else 1f }
+                    val hb = pb.headroom.let { if (it > 0f) it else 1f }
+                    val d = ha - hb
+                    when {
+                        d > 0.15f || d < -0.15f -> if (hb > ha) 1 else -1
+                        // 3) 实测速率高的优先
+                        a.kbps != b.kbps -> if (b.kbps > a.kbps) 1 else -1
+                        // 4) 建连快的优先
+                        else -> a.costMs.compareTo(b.costMs)
+                    }
+                }
+            }
+        })
+
+        val keepCount = minOf(PROBE_SOURCES_ENOUGH, cands.size)
+        val keep = cands.subList(0, keepCount)
+        keep.forEach { SourceProfiles.put(it.url, it.profile) }
+        // HLS 源按实测质量排前面（画像也随之下发）；直连流只在名额还有剩时补在末尾备用
+        tv.videoUrl = (keep.map { it.url } + fallbacks.sortedBy { it.second }.map { it.first })
+            .take(PROBE_SOURCES_ENOUGH)
         return true
     }
 
