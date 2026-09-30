@@ -4,11 +4,17 @@ import android.app.Application
 import android.content.Context
 import android.content.res.Resources
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.multidex.MultiDex
 import com.lizongying.mytv.models.MyViewModel
+import com.lizongying.mytv.models.TVList
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 
 class MyTVApplication : Application() {
@@ -28,8 +34,20 @@ class MyTVApplication : Application() {
 
     lateinit var myViewModel: MyViewModel
 
+    /** 进程级后台作用域：启动预加载不随任何 Activity 销毁而取消 */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
+
+        // 频道列表解析提前到进程启动最早期：缓存里 1000+ 条 M3U 的解析 + 同名归一化
+        // （逐条正则）实测 2s 以上，提前后与 Activity / Fragment 创建完全并行，
+        // 不再压在首屏路径上
+        appScope.launch {
+            val t0 = System.currentTimeMillis()
+            TVList.load(this@MyTVApplication)
+            Log.i(TAG, "channel list preloaded in ${System.currentTimeMillis() - t0}ms")
+        }
 
         displayMetrics = DisplayMetrics()
         realDisplayMetrics = DisplayMetrics()
@@ -123,5 +141,9 @@ class MyTVApplication : Application() {
     override fun attachBaseContext(base: Context?) {
         super.attachBaseContext(base)
         MultiDex.install(base)
+    }
+
+    companion object {
+        private const val TAG = "MyTVApp"
     }
 }

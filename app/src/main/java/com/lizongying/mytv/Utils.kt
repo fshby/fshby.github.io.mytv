@@ -15,6 +15,7 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 object Utils {
     private var between: Long = 0
@@ -24,6 +25,20 @@ object Utils {
     private var c: String = ""
 
     private var listener: Request.RequestListener? = null
+
+    /**
+     * 远端初始化（时间校准 + 央视频 JS 抓取）专用客户端。
+     *
+     * 必须显式设置超时：原来用无超时的默认客户端叠加 RetryInterceptor(3)，
+     * 断网时单个请求最坏要等 4 × 默认 10s，三个请求串行会把启动流程拖住几十秒。
+     */
+    private val startupClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .addInterceptor(RetryInterceptor(1))
+            .build()
+    }
 
     fun getDateFormat(format: String): String {
         return SimpleDateFormat(
@@ -100,9 +115,7 @@ object Utils {
      */
     private suspend fun getTimestampFromServer(): Long {
         return withContext(Dispatchers.IO) {
-            val client = okhttp3.OkHttpClient.Builder()
-                .addInterceptor(RetryInterceptor(3))
-                .build()
+            val client = startupClient
             val request = okhttp3.Request.Builder()
                 .url("https://api.m.taobao.com/rest/api3.do?api=mtop.common.getTimestamp")
                 .build()
@@ -122,9 +135,7 @@ object Utils {
 
     private suspend fun getNothing(): String {
         return withContext(Dispatchers.IO) {
-            val client = okhttp3.OkHttpClient.Builder()
-                .addInterceptor(RetryInterceptor(3))
-                .build()
+            val client = startupClient
             val request = okhttp3.Request.Builder()
                 .url("https://www.yangshipin.cn")
                 .build()
@@ -152,9 +163,7 @@ object Utils {
 
     private suspend fun getNothing2(x: String): String {
         return withContext(Dispatchers.IO) {
-            val client = okhttp3.OkHttpClient.Builder()
-                .addInterceptor(RetryInterceptor(3))
-                .build()
+            val client = startupClient
 
             val request = okhttp3.Request.Builder()
                 .url("https://www.yangshipin.cn/js/chunk-vendors.$x.js")
@@ -191,9 +200,7 @@ object Utils {
 
     private suspend fun getNothing3(x: String): String {
         return withContext(Dispatchers.IO) {
-            val client = okhttp3.OkHttpClient.Builder()
-                .addInterceptor(RetryInterceptor(3))
-                .build()
+            val client = startupClient
 
             val request = okhttp3.Request.Builder()
                 .url("https://www.yangshipin.cn/js/chunk-vendors.$x.js")

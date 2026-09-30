@@ -4,6 +4,12 @@ import android.content.Context
 import android.util.Log
 import com.lizongying.mytv.R
 import com.lizongying.mytv.TVSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
 
 object TVList {
     private const val TAG = "TVList"
@@ -12,16 +18,51 @@ object TVList {
     var list: Map<String, List<TV>> = emptyMap()
         private set
 
+    /** 预加载任务：在 Application.onCreate 里启动，与 Activity / Fragment 创建并行 */
+    private var loadJob: Deferred<Map<String, List<TV>>>? = null
+
     /** 启动时同步调用：优先外部文件 / 缓存（毫秒级首屏），否则回退内置表 */
+    @Synchronized
     fun load(context: Context): Map<String, List<TV>> {
         if (list.isEmpty()) {
             // 外部列表必须同样过一遍 normalize：id 同时是全局下标，
             // 不做归一化会导致所有频道 id 都是 0，换台定位错乱
-            val external = TVSource.loadSync(context)?.let { normalize(it) }
+            val t0 = System.currentTimeMillis()
+            val raw = TVSource.loadSync(context)
+            val t1 = System.currentTimeMillis()
+            val external = raw?.let { normalize(it) }
+            val t2 = System.currentTimeMillis()
             list = external ?: setup()
-            Log.i(TAG, "load -> ${list.size} groups / ${list.values.sumOf { it.size }} channels")
+            Log.i(
+                TAG,
+                "load -> ${list.size} groups / ${list.values.sumOf { it.size }} channels " +
+                        "(decode+parse ${t1 - t0}ms, normalize ${t2 - t1}ms)"
+            )
         }
         return list
+    }
+
+    /**
+     * 进程启动最早期调用，把频道列表解析从首屏路径上挪走。
+     *
+     * 缓存里有 1000+ 条 M3U，解析 + 同名归一化（逐条正则）实测要 2s 以上，
+     * 放在 Application.onCreate 就能与 Activity / Fragment 的创建完全重叠。
+     */
+    fun preload(context: Context, scope: CoroutineScope): Deferred<Map<String, List<TV>>> {
+        loadJob?.let { return it }
+        val appContext = context.applicationContext
+        val job = scope.async(start = CoroutineStart.LAZY) { load(appContext) }
+        loadJob = job
+        job.start()
+        return job
+    }
+
+    /** 等待列表就绪；预加载异常时退回同步加载，保证列表一定可用 */
+    suspend fun ensureLoaded(context: Context): Map<String, List<TV>> {
+        loadJob?.let { job ->
+            runCatching { job.await() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        return withContext(Dispatchers.IO) { load(context) }
     }
 
     /** 注入远程解析结果；内容与当前一致时返回 false（无需重建界面） */
@@ -70,18 +111,25 @@ object TVList {
     private fun normalize(source: Map<String, List<TV>>): Map<String, List<TV>> {
         val listNew = mutableMapOf<String, List<TV>>()
         val seen = HashSet<String>()
+        // 同名频道（CCTV1 一个名字能有 20 条源）反复命中的是同一批标题，
+        // 逐条重跑正则非常浪费；这里按标题做一次记忆化
+        val keyMemo = HashMap<String, String>(1024)
+        val logoMemo = HashMap<String, String>(1024)
         var id = 0
+        var dup = 0
         for ((k, v) in source) {
             val group = mutableListOf<TV>()
             for (tv in v) {
                 if (tv.mustToken) {
                     continue
                 }
-                val key = dedupeKey(tv.title)
+                val key = keyMemo.getOrPut(tv.title) { dedupeKey(tv.title) }
                 // 频道名命中内置表时，图标优先用官方内置版
-                builtinLogos[logoKey(tv.title)]?.let { tv.logo = it }
+                builtinLogos[logoMemo.getOrPut(tv.title) { logoKey(tv.title) }]?.let {
+                    tv.logo = it
+                }
                 if (key.isNotEmpty() && !seen.add(key)) {
-                    Log.i(TAG, "duplicate skipped: ${tv.title}")
+                    dup++
                     continue
                 }
                 tv.id = id
@@ -92,6 +140,10 @@ object TVList {
             if (group.size > 0) {
                 listNew[k] = group
             }
+        }
+        if (dup > 0) {
+            // 逐条打日志本身在弱盒子上就是可观开销（一次启动 600+ 条副本），只汇总一条
+            Log.i(TAG, "duplicates skipped: $dup")
         }
         return listNew
     }

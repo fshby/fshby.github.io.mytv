@@ -87,34 +87,50 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
 
+        val tYsp = System.currentTimeMillis()
         activity?.let { YSP.init(it) }
+        Log.i(TAG, "YSP.init ${System.currentTimeMillis() - tYsp}ms")
 
         itemPosition = SP.itemPosition
 
-        // 同步加载外部列表（本地文件 / 缓存，毫秒级），保证首屏就是外部频道表
-        TVList.load(requireContext())
+        // 列表解析已在 Application.onCreate 里预加载（见 TVList.preload），
+        // 这里只等它完成：1000+ 条缓存 M3U 的解析 + 同名归一化实测 2s 以上，
+        // 与界面创建并行后不再顶在首屏路径上
+        lifecycleScope.launch {
+            val ctx = context ?: return@launch
+            val tLoad = System.currentTimeMillis()
+            withContext(Dispatchers.IO) { TVList.ensureLoaded(ctx) }
+            Log.i(TAG, "await channel list ${System.currentTimeMillis() - tLoad}ms")
+            if (_binding == null) return@launch
+            view?.post {
+                if (_binding == null) return@post
+                val mainActivity = activity as? MainActivity ?: return@post
 
-        view?.post {
-            buildRows()
-            registerObservers()
+                val tBuild = System.currentTimeMillis()
+                buildRows()
+                Log.i(TAG, "buildRows ${System.currentTimeMillis() - tBuild}ms")
+                registerObservers()
 
-            (activity as MainActivity).fragmentReady(TAG)
+                // 视图就绪计数 + 频道列表就绪：两者凑齐即放行首屏起播（不依赖任何网络请求）
+                mainActivity.fragmentReady(TAG)
+                mainActivity.onChannelListReady()
 
-            // 后台拉取远程列表，有变化再重建
-            refreshRemoteList()
-            // 之后每 30 分钟静默重探：IPTV 源可用性随时变化，
-            // 周期刷新让死源及时剔除、恢复的源及时回来
-            startPeriodicRefresh()
+                // 后台拉取远程列表，有变化再重建
+                refreshRemoteList()
+                // 之后每 30 分钟静默重探：IPTV 源可用性随时变化，
+                // 周期刷新让死源及时剔除、恢复的源及时回来
+                startPeriodicRefresh()
+            }
         }
     }
 
-    /** 周期性重拉远程列表 + 重探可用性；lifecycleScope 随 Fragment 销毁自动取消 */
+    /** 每 30 分钟完整重拉 + 重探一次（force 路径），让死源剔除、恢复的源回来 */
     private fun startPeriodicRefresh() {
         lifecycleScope.launch {
             while (isActive) {
                 delay(30 * 60 * 1000L)
                 Log.i(TAG, "periodic refresh")
-                refreshRemoteList()
+                refreshRemoteList(force = true)
             }
         }
     }
@@ -276,32 +292,95 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         }
     }
 
-    /** 后台拉取远程频道列表；成功且内容有变化时重建界面并续播当前频道 */
-    private fun refreshRemoteList() {
-        val url = TVSource.remoteUrl(requireContext())
+    /**
+     * 后台拉取远程频道列表，必要时重建界面并重探可用性。
+     *
+     * 两条路径：
+     *  - 启动路径（force = false）：**先判断能不能直接复用上次结果**，能就整段跳过。
+     *    判据是「内容没变（304 或原文签名一致）**且**上次探测结论还新鲜（< CACHE_MAX_AGE）」。
+     *    远程列表很少变、探测却要跑几分钟，原来每次重启都无条件重跑，纯属白烧。
+     *  - 周期路径（force = true，每 30 分钟）：完整下载 + 解析 + 重探，
+     *    保证死源会被剔除、恢复的源能回来。
+     */
+    private fun refreshRemoteList(force: Boolean = false) {
+        val context = context ?: return
+        val url = TVSource.remoteUrl(context)
         if (url.isEmpty()) {
             return
         }
-        Log.i(TAG, "remote list $url")
         lifecycleScope.launch {
-            val text = withContext(Dispatchers.IO) { TVSource.fetch(url) }
+            val meta = withContext(Dispatchers.IO) { TVSource.readCacheMeta(context) }
+            // 探测结论新鲜时才发送条件请求：服务器回 304 就没法拿到原文，
+            // 而结论过期是必须重探的，必须拿到原文才能重新过滤
+            val canReuse = !force && TVSource.isProbeFresh(context, CACHE_MAX_AGE_MS)
+            Log.i(TAG, "remote list $url (force=$force, reuse=$canReuse)")
+            val res = withContext(Dispatchers.IO) {
+                TVSource.fetch(
+                    url,
+                    if (canReuse) meta.etag else "",
+                    if (canReuse) meta.lastModified else "",
+                )
+            }
+            if (res.text == null && !res.notModified) return@launch
+
+            val sig = res.text?.let { TVSource.contentSig(it) }.orEmpty()
+            val unchanged = res.notModified ||
+                    (sig.isNotEmpty() && sig == meta.sig && TVList.list.isNotEmpty())
+            if (unchanged && canReuse) {
+                // 列表没变 + 结论新鲜：解析、重建、探测全部跳过
+                Log.i(TAG, "list unchanged & probe fresh, reuse cache (skip parse & probe)")
+                withContext(Dispatchers.IO) {
+                    TVSource.writeCacheMeta(
+                        context,
+                        meta.copy(
+                            ts = System.currentTimeMillis(),
+                            etag = res.etag.ifEmpty { meta.etag },
+                            lastModified = res.lastModified.ifEmpty { meta.lastModified },
+                        )
+                    )
+                }
+                return@launch
+            }
+
+            val text = res.text ?: return@launch
+            // 解析 226KB M3U + 两千多条频道名的同名归一化（逐条正则）必须离开主线程，
+            // lifecycleScope 默认跑在主线程，放这里会直接造成掉帧
+            val parsed = withContext(Dispatchers.IO) { TVSource.parse(text, url) }
                 ?: return@launch
-            val parsed = TVSource.parse(text, url) ?: return@launch
             // 先按名去重后立即上屏（不等待探测，保证秒响应）
-            if (TVList.applyRemote(parsed)) {
+            if (withContext(Dispatchers.IO) { TVList.applyRemote(parsed) }) {
                 rebuildRows()
             }
+            // 起播稳定后再开始探测：全量探测要跑几分钟且占满多路连接，
+            // 立刻开跑会与首帧/首片抢带宽，弱盒子上直接表现为开机卡顿
+            delay(PROBE_START_DELAY_MS)
             // 后台探测各源可用性：剔除异常频道，同名频道保留探测通过的那个
-            val alive = withContext(Dispatchers.IO) { TVSource.filterAlive(parsed) }
+            val alive = withContext(Dispatchers.IO) {
+                TVSource.filterAlive(parsed, PROBE_CONCURRENCY)
+            }
             // 图标优先用内置官方版（不破坏多源结构）
-            TVList.patchBuiltinLogos(alive)
-            if (TVList.applyRemote(alive)) {
+            withContext(Dispatchers.IO) { TVList.patchBuiltinLogos(alive) }
+            if (withContext(Dispatchers.IO) { TVList.applyRemote(alive) }) {
                 Log.i(TAG, "unreachable channels filtered")
                 rebuildRows()
             }
-            // 缓存保存探测过滤后的列表（而非远程原文）：
-            // 下次启动秒开的列表即已剔除死源，不会先看到大量播放错误的频道
-            context?.let { TVSource.saveCache(it, TVSource.toM3U(alive)) }
+            // 缓存保存探测过滤后的列表（而非远程原文）：下次启动秒开的列表即已剔除死源。
+            // 同时记录原文签名 + 探测时间戳，下次启动据此判断能否整段跳过。
+            withContext(Dispatchers.IO) {
+                TVSource.saveCache(context, TVSource.toM3U(alive))
+                val now = System.currentTimeMillis()
+                TVSource.writeCacheMeta(
+                    context,
+                    TVSource.CacheMeta(
+                        ts = now,
+                        probeTs = now,
+                        url = url,
+                        etag = res.etag,
+                        lastModified = res.lastModified,
+                        sig = sig,
+                    )
+                )
+            }
         }
     }
 
@@ -311,6 +390,7 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         }
         // 列表被过滤/重建后下标会漂移，先记住当前频道名，重建后按名字找回
         val currentTitle = tvListViewModel.getTVViewModel(itemPosition)?.getTV()?.title
+        val t0 = System.currentTimeMillis()
         buildRows()
         registerObservers()
         if (!currentTitle.isNullOrEmpty()) {
@@ -320,7 +400,7 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
                 tvListViewModel.setItemPosition(itemPosition)
             }
         }
-        Log.i(TAG, "rows rebuilt, ${tvListViewModel.size()} channels")
+        Log.i(TAG, "rows rebuilt, ${tvListViewModel.size()} channels in ${System.currentTimeMillis() - t0}ms")
         // fragmentReady 的启动计数早已用完，重建后需主动触发一次换台续播
         tvListViewModel.getTVViewModel(itemPosition)?.changed("remote")
         setPosition()
@@ -437,7 +517,11 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
         return true
     }
 
-    fun fragmentReady() {
+    /**
+     * 启动闸门放行后的首屏动作：起播当前频道 + 拉取整表 EPG。
+     * 由 MainActivity 在「Fragment 视图就绪 + 频道列表就绪」后调用，且只调用一次。
+     */
+    fun startup() {
         tvListViewModel.getTVViewModel(itemPosition)?.changed("init")
 
         tvListViewModel.tvListViewModel.value?.forEach { tvViewModel ->
@@ -556,5 +640,18 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
     companion object {
         private const val TAG = "MainFragment"
         private const val POSITION = "position"
+
+        /** 探测并发：偏高会与播放抢带宽，弱盒子上直接表现为开机后播放卡顿 */
+        private const val PROBE_CONCURRENCY = 6
+
+        /** 起播后延迟多久再开始全量探测，避开首帧与首片下载 */
+        private const val PROBE_START_DELAY_MS = 20_000L
+
+        /**
+         * 探测结论的最长复用时间。启动时若上次探测在这个时间内完成，
+         * 且远程列表没变，就连解析带探测整段跳过（这是「重启不再白烧资源」的关键）。
+         * 超过这个时间说明隔了很久没开机，必须重探以保证死源被剔除。
+         */
+        private const val CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000L
     }
 }

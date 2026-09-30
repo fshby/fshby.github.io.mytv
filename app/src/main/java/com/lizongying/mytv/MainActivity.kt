@@ -32,7 +32,21 @@ import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPreferenceChangeListener {
 
-    private var ready = 0
+    /** 已创建完成的 Fragment 视图数量 */
+    private var fragmentReadyCount = 0
+
+    /** MainFragment 的频道列表是否已构建完毕（只有此时才能安全起播、拉 EPG） */
+    private var channelListReady = false
+
+    /** 启动闸门是否已放行（保证只放行一次） */
+    private var startupStarted = false
+
+    /** 参与启动闸门的 Fragment：Player / Error / Time / Info / Channel / Main */
+    private val startupFragmentCount = 6
+
+    /** 时间校准等远端初始化延后到起播之后再跑，避免占用启动关键路径 */
+    private val syncTimeDelay: Long = 8000
+
     private val playerFragment = PlayerFragment()
     private val errorFragment = ErrorFragment()
 
@@ -291,12 +305,36 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
         }
     }
 
+    /**
+     * Fragment 视图就绪（由各 Fragment 的 onCreateView 调用）。
+     * 就绪个数只用于「凑齐后放行首屏」，不再绑定任何网络请求。
+     */
     fun fragmentReady(tag: String) {
-        ready++
-        Log.i(TAG, "ready $tag $ready ")
-        if (ready == 7) {
-            mainFragment.fragmentReady()
-        }
+        fragmentReadyCount++
+        Log.i(TAG, "ready $tag $fragmentReadyCount")
+        tryStartPlayback()
+    }
+
+    /**
+     * MainFragment 的频道列表已构建完毕。
+     *
+     * 启动闸门 = 所有 Fragment 视图就绪 + 频道列表就绪，**不含任何网络请求**。
+     * 原实现把 Utils.init()（时间校准 + 央视频 JS 抓取，三个串行远端请求，
+     * 真机实测阻塞 7.4s）也算作第 7 个就绪项，结果是「网络慢/断网 → 永不启播」，
+     * 屏幕上只有时间组件和黑屏。现在远端初始化只做后台校准，不再决定能否起播。
+     */
+    fun onChannelListReady() {
+        channelListReady = true
+        tryStartPlayback()
+    }
+
+    private fun tryStartPlayback() {
+        if (startupStarted) return
+        if (!channelListReady) return
+        if (fragmentReadyCount < startupFragmentCount) return
+        startupStarted = true
+        Log.i(TAG, "startup gate open (fragments=$fragmentReadyCount)")
+        mainFragment.startup()
     }
 
     private fun showTime() {
@@ -612,8 +650,17 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
 
     override fun onStart() {
         Log.i(TAG, "onStart MainActivity")
-        syncTime()
         super.onStart()
+        // 时间校准 + 央视频初始化要串行访问 3 个远端接口，与播放无关。
+        // 原来在 onStart 立即执行，实测占掉 7.4s 启动时间且断网时会拖到超时；
+        // 改为起播之后在后台跑，失败也不影响播放。
+        handler.removeCallbacks(syncTimeRunnable)
+        handler.postDelayed(syncTimeRunnable, syncTimeDelay)
+    }
+
+    private val syncTimeRunnable = Runnable {
+        Log.i(TAG, "deferred sync time")
+        syncTime()
     }
 
     override fun onResume() {
@@ -647,7 +694,8 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
     }
 
     override fun onRequestFinished(message: String?) {
-        fragmentReady("request")
+        // 远端初始化结果不再计入启动闸门（见 onChannelListReady 注释），仅记录即可
+        Log.i(TAG, "request finished: $message")
     }
 
     private companion object {
