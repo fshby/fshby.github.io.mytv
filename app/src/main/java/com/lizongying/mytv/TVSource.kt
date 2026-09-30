@@ -142,6 +142,25 @@ object TVSource {
             .onFailure { Log.e(TAG, "save cache failed", it) }
     }
 
+    /**
+     * 把（探测过滤后的）频道分组序列化回标准 M3U 文本。
+     * 缓存应保存过滤后的列表而非远程原文：否则下次启动秒开的是
+     * 未探测的全量列表，用户会看到大量播放错误的频道。
+     */
+    fun toM3U(groups: Map<String, List<TV>>): String {
+        val sb = StringBuilder("#EXTM3U\n")
+        groups.forEach { (group, list) ->
+            list.forEach { tv ->
+                val url = tv.videoUrl.firstOrNull() ?: return@forEach
+                val logo = (tv.logo as? String).orEmpty()
+                val logoAttr = if (logo.isNotEmpty()) " tvg-logo=\"${logo}\"" else ""
+                sb.append("#EXTINF:-1${logoAttr} group-title=\"${group}\",${tv.title}\n")
+                sb.append(url).append('\n')
+            }
+        }
+        return sb.toString()
+    }
+
     // ---------------------------------------------------------------- 解析入口
 
     /** 按内容自动识别格式并解析；无法解析返回 null */
@@ -359,7 +378,7 @@ object TVSource {
     /** 头部预取的字节数——m3u8 列表很小，取一小段足够判断存活 */
     private const val PROBE_RANGE = "bytes=0-2047"
 
-    /** 单个地址是否可用（只读头部少量字节，不下载整段） */
+    /** 单个地址是否可用：HTTP 成功且响应内容确实是媒体（m3u8 文本 / TS 字节流） */
     fun isAlive(url: String): Boolean {
         if (!isPlayableUrl(url)) return false
         return runCatching {
@@ -370,9 +389,59 @@ object TVSource {
                 .get()
                 .build()
             probeClient.newCall(req).execute().use { resp ->
-                resp.code in 200..206
+                if (resp.code !in 200..206) return@use false
+                val ct = resp.header("Content-Type")?.lowercase().orEmpty()
+                if (ct.contains("mpegurl") || ct.contains("mp2t")) return@use true
+                // 严禁 body.bytes()：部分服务器无视 Range 头返回完整直播流，
+                // 全量读取会无限吞内存直接 OOM。只限量读头部 2KB 判断内容。
+                val head = readHead(resp, PROBE_BYTES) ?: return@use false
+                isMediaPayload(ct, head)
             }
         }.onFailure { Log.d(TAG, "probe fail $url ${it.javaClass.simpleName}") }.getOrDefault(false)
+    }
+
+    /** 限量预读头部字节数 */
+    private const val PROBE_BYTES = 2048
+
+    /** 从响应体限量读取前 [max] 字节后立即关闭；流提前结束则返回实际读到的内容 */
+    private fun readHead(resp: okhttp3.Response, max: Int): ByteArray? {
+        val input = resp.body?.byteStream() ?: return null
+        val buf = ByteArray(max)
+        var off = 0
+        try {
+            while (off < max) {
+                val n = input.read(buf, off, max - off)
+                if (n < 0) break
+                off += n
+            }
+        } finally {
+            input.close()
+        }
+        return buf.copyOf(off)
+    }
+
+    /**
+     * 响应内容是否是真正的流媒体数据。
+     * 大量 IPTV 中转接口（如 api.php）对任意 GET 都返回 200 + 空 text/html，
+     * 只看状态码会把它们误判为存活 -> 频道进入列表却播放错误。
+     * 这里额外校验：媒体 Content-Type，或内容是 m3u8 文本 / MPEG-TS 同步字节。
+     */
+    private fun isMediaPayload(contentType: String?, body: ByteArray): Boolean {
+        if (body.isEmpty()) return false
+        val ct = contentType?.lowercase().orEmpty()
+        if (ct.contains("mpegurl") || ct.contains("mp2t") ||
+            ct.contains("octet-stream") || ct.startsWith("video/") || ct.startsWith("audio/")
+        ) {
+            return true
+        }
+        // text/html 等页面类型必须靠内容自证是媒体，否则一律判死
+        val head = String(body, 0, body.size.coerceAtMost(512), Charsets.ISO_8859_1)
+        if (head.contains("#EXTM3U") || head.contains("#EXTINF") || head.contains("#EXT-X")) {
+            return true
+        }
+        // MPEG-TS 包同步字节 0x47（每 188 字节一个，校验前几个包位提高置信度）
+        return body.size > 376 && body[0].toInt() == 0x47 &&
+            body[188].toInt() == 0x47 && body[376].toInt() == 0x47
     }
 
     /**

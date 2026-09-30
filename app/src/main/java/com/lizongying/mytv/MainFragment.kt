@@ -287,7 +287,6 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
             val text = withContext(Dispatchers.IO) { TVSource.fetch(url) }
                 ?: return@launch
             val parsed = TVSource.parse(text, url) ?: return@launch
-            context?.let { TVSource.saveCache(it, text) }
             // 先按名去重后立即上屏（不等待探测，保证秒响应）
             if (TVList.applyRemote(parsed)) {
                 rebuildRows()
@@ -298,6 +297,9 @@ class MainFragment : Fragment(), CardAdapter.ItemListener {
                 Log.i(TAG, "unreachable channels filtered")
                 rebuildRows()
             }
+            // 缓存保存探测过滤后的列表（而非远程原文）：
+            // 下次启动秒开的列表即已剔除死源，不会先看到大量播放错误的频道
+            context?.let { TVSource.saveCache(it, TVSource.toM3U(alive)) }
         }
     }
 
