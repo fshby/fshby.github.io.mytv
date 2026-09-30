@@ -59,7 +59,7 @@
 
 | 微信赞赏码 | 支付宝 |
 | --- | --- |
-| ![微信赞赏码](./screenshots/zanshangMa.webp) | ![支付宝](./screenshots/zfb.jpg) |
+| ![微信赞赏码](./screenshots/zanshangMa.webp) | ![支付宝](./screenshots/alipay.webp) |
 
 ## 已知待办
 
