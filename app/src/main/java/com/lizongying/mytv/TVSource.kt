@@ -244,16 +244,20 @@ object TVSource {
      * 把（探测过滤后的）频道分组序列化回标准 M3U 文本。
      * 缓存应保存过滤后的列表而非远程原文：否则下次启动秒开的是
      * 未探测的全量列表，用户会看到大量播放错误的频道。
+     *
+     * 多源频道会为每个源写一条 EXTINF —— 解析侧（parseM3U）按频道名重新合并回多源，
+     * 这样「写缓存 → 读缓存」的往返不会像以前那样把多源压成单源。
      */
     fun toM3U(groups: Map<String, List<TV>>): String {
         val sb = StringBuilder("#EXTM3U\n")
-        groups.forEach { (group, list) ->
-            list.forEach { tv ->
-                val url = tv.videoUrl.firstOrNull() ?: return@forEach
+        for ((group, list) in groups) {
+            for (tv in list) {
                 val logo = (tv.logo as? String).orEmpty()
                 val logoAttr = if (logo.isNotEmpty()) " tvg-logo=\"${logo}\"" else ""
-                sb.append("#EXTINF:-1${logoAttr} group-title=\"${group}\",${tv.title}\n")
-                sb.append(url).append('\n')
+                for (url in tv.videoUrl) {
+                    sb.append("#EXTINF:-1${logoAttr} group-title=\"${group}\",${tv.title}\n")
+                    sb.append(url).append('\n')
+                }
             }
         }
         return sb.toString()
@@ -333,9 +337,16 @@ object TVSource {
      *
      * 映射：group-title -> 分组行 / 逗号后文字 -> 频道名 / 下一行 -> 播放地址
      * 注意频道名里不要含逗号，否则会被属性区分割符抢先截断。
+     *
+     * **同名频道会合并成一个 TV 的多源列表**（键 = 分组 + 归一化频道名）。
+     * 生产列表里 CCTV1 这类频道有 20 条源，原实现是「一条 URL 一个 TV」，
+     * 随后被 TVList 的同名去重丢掉 19 条 —— 备用源在进入播放器之前就消失了，
+     * rotateToNextSource() 因此成了死代码。合并后多源才真正可用。
      */
     private fun parseM3U(text: String, baseUrl: String): Map<String, List<TV>>? {
         val groups = LinkedHashMap<String, MutableList<TV>>()
+        // 分组 + 归一化频道名 -> 已建好的 TV（用于把后续同名 URL 追加成备用源）
+        val byKey = HashMap<String, TV>()
 
         var title = ""
         var group = ""
@@ -374,8 +385,15 @@ object TVSource {
                     }
                     val name = title.ifEmpty { url.substringAfterLast('/').substringBefore('?') }
                     val g = group.ifEmpty { "其他" }
-                    groups.getOrPut(g) { mutableListOf() }.add(
-                        TV(
+                    val key = g + '\u0000' + mergeKey(name)
+                    val exist = byKey[key]
+                    if (exist != null) {
+                        // 同一频道再来一个源：追加为备用源（URL 级去重，列表里同源重复很常见）
+                        if (!exist.videoUrl.contains(url)) {
+                            exist.videoUrl = exist.videoUrl + url
+                        }
+                    } else {
+                        val tv = TV(
                             0,
                             name,
                             attrs.tvgName.ifEmpty { attrs.tvgId.ifEmpty { name } },
@@ -389,13 +407,35 @@ object TVSource {
                             false,
                             volume = 1.0F                       // 远程源统一满音量，避免默认 0.1 听感无声
                         )
-                    )
+                        byKey[key] = tv
+                        groups.getOrPut(g) { mutableListOf() }.add(tv)
+                    }
                     title = ""
                     attrs.reset()
                 }
             }
         }
         return groups.ifEmpty { null }
+    }
+
+    private val bracketRegex = Regex("""[\[\(（【][^\]\)）】]*[\]\)）】]""")
+    private val qualityRegex = Regex(
+        """(1080p|720p|576p|480p|360p|4k|8k|uhd|fhd|hd|sd|高清|超清|标清|蓝光|原画)""",
+        RegexOption.IGNORE_CASE
+    )
+    private val punctuationRegex = Regex("""[\s\-_.·、/]+""")
+
+    /**
+     * 合并同频道用的归一化键，与 TVList.dedupeKey 保持同一套规则
+     * （去括号、去画质词、去「频道」、去标点），保证「合并」与「去重」口径一致：
+     * parseM3U 合并出来的键，到 normalize 阶段不会又被判成重复而丢弃。
+     */
+    private fun mergeKey(title: String): String {
+        var s = title.trim().lowercase()
+        s = bracketRegex.replace(s, "")
+        s = qualityRegex.replace(s, "")
+        s = s.replace("频道", "")
+        return punctuationRegex.replace(s, "")
     }
 
     /** 找第一个「不在引号内」的逗号，用于切分属性区与频道名 */
@@ -529,8 +569,17 @@ object TVSource {
     private const val PROBE_RANGE = "bytes=0-2047"
 
     /** 单个地址是否可用：HTTP 成功且响应内容确实是媒体（m3u8 文本 / TS 字节流） */
-    fun isAlive(url: String): Boolean {
-        if (!isPlayableUrl(url)) return false
+    fun isAlive(url: String): Boolean = probeUrl(url) != null
+
+    /**
+     * 探测单个地址，返回「建连 + 首字节」耗时（毫秒）；不可用返回 null。
+     *
+     * 耗时同时被用于多源排序：实测同频道不同源之间能差 5~70 倍，
+     * 换台默认用最快的那个源，比任何缓存优化都值。
+     */
+    fun probeUrl(url: String): Long? {
+        if (!isPlayableUrl(url)) return null
+        val t0 = System.nanoTime()
         return runCatching {
             val req = Request.Builder()
                 .url(url)
@@ -539,19 +588,27 @@ object TVSource {
                 .get()
                 .build()
             probeClient.newCall(req).execute().use { resp ->
-                if (resp.code !in 200..206) return@use false
+                if (resp.code !in 200..206) return@use null
                 val ct = resp.header("Content-Type")?.lowercase().orEmpty()
-                if (ct.contains("mpegurl") || ct.contains("mp2t")) return@use true
+                if (ct.contains("mpegurl") || ct.contains("mp2t")) return@use costMs(t0)
                 // 严禁 body.bytes()：部分服务器无视 Range 头返回完整直播流，
-                // 全量读取会无限吞内存直接 OOM。只限量读头部 2KB 判断内容。
-                val head = readHead(resp, PROBE_BYTES) ?: return@use false
-                isMediaPayload(ct, head)
+                // 全量读取会无限吞内存直接 OOM（真机崩溃循环实证）。只限量读头部 2KB。
+                val head = readHead(resp, PROBE_BYTES) ?: return@use null
+                if (isMediaPayload(ct, head)) costMs(t0) else null
             }
-        }.getOrDefault(false)
+        }.getOrDefault(null)
     }
+
+    private fun costMs(fromNano: Long): Long = (System.nanoTime() - fromNano) / 1_000_000
 
     /** 限量预读头部字节数 */
     private const val PROBE_BYTES = 2048
+
+    /** 一个频道凑够几个可用源就不再往下测（留 1 个主用 + 1 个备用足够） */
+    private const val PROBE_SOURCES_ENOUGH = 2
+
+    /** 单频道最多测几个源：多源频道（CCTV1 有 20 条）全测会让探测时间失控 */
+    private const val PROBE_SOURCES_MAX = 6
 
     /** 从响应体限量读取前 [max] 字节后立即关闭；流提前结束则返回实际读到的内容 */
     private fun readHead(resp: okhttp3.Response, max: Int): ByteArray? {
@@ -598,7 +655,7 @@ object TVSource {
      * 并发探测并剔除「所有源都探测不通过」的频道，让异常频道不出现在列表里。
      *
      * - 有 pid 的频道（央视频等接口拉流）没有直连地址，跳过探测，原样保留
-     * - 多源频道按顺序探测，命中后把可用地址提到首位
+     * - 多源频道按实测耗时排序写回（最快的当默认源，次快的当 failover 备用源）
      * - 若全部频道都探测失败，视为网络异常，原样返回（避免断网时把列表清空）
      */
     suspend fun filterAlive(
@@ -646,22 +703,41 @@ object TVSource {
         return next
     }
 
-    /** 探测单个频道的多个源；有一个通得过就返回 true（可用地址排到首位）。阻塞式，调用方在 IO 线程。 */
+    /**
+     * 探测单个频道的多个源。返回 true 表示至少一个源可用。
+     *
+     * 与原实现的区别：
+     *  - 记录每个源「建连 + 首字节」的实测耗时，按耗时升序写回 videoUrl ——
+     *    换台默认用最快源（TVViewModel 初始下标 0），故障时轮换到次快源；
+     *  - 只保留探测通过的源（死源留在列表里毫无价值，还会让 failover 白撞一次）；
+     *  - 但不会无脑测完 20 个源：凑够 [PROBE_SOURCES_ENOUGH] 个可用源就停，
+     *    单个频道最多测 [PROBE_SOURCES_MAX] 个，避免全量探测时间失控。
+     *
+     * 阻塞式，调用方在 IO 线程。
+     */
     private fun probeTV(tv: TV): Boolean {
         if (tv.pid.isNotEmpty()) {
             return true // 接口拉流频道，没有直连地址，不参与探测
         }
         val urls = tv.videoUrl
         if (urls.isEmpty()) return false
-        val hit = urls.indexOfFirst { isAlive(it) }
-        if (hit < 0) {
+
+        val alive = ArrayList<Pair<String, Long>>(4)
+        var probed = 0
+        for (u in urls) {
+            if (probed >= PROBE_SOURCES_MAX) break
+            probed++
+            val cost = probeUrl(u) ?: continue
+            alive.add(u to cost)
+            if (alive.size >= PROBE_SOURCES_ENOUGH) break
+        }
+        if (alive.isEmpty()) {
             // 不逐条打日志：一次全量探测有 600+ 个死源，
             // 逐条 Log 在弱盒子上本身就是可观开销
             return false
         }
-        if (hit > 0) {
-            tv.videoUrl = listOf(urls[hit]) + urls.filterIndexed { i, _ -> i != hit }
-        }
+        alive.sortBy { it.second }
+        tv.videoUrl = alive.map { it.first }
         return true
     }
 

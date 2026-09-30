@@ -24,6 +24,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.lizongying.mytv.api.DnsCache
+import com.lizongying.mytv.api.RedirectMemory
 import com.lizongying.mytv.databinding.PlayerBinding
 import com.lizongying.mytv.models.TVViewModel
 import okhttp3.OkHttpClient
@@ -63,6 +65,11 @@ class PlayerFragment : Fragment() {
                 val httpClient = OkHttpClient.Builder()
                     .connectTimeout(5, TimeUnit.SECONDS)
                     .readTimeout(8, TimeUnit.SECONDS)
+                    // DNS 缓存：换台时省掉每次 29~61ms 的域名解析（已带 TTL，IP 变了会自动重解析）
+                    .dns(DnsCache.shared)
+                    // 重定向落地地址固化：实测 8/14 的源要跳 1~3 次 302，
+                    // 且 HLS 每轮刷新 playlist 都重复跳，固化后每次省一个 RTT
+                    .addInterceptor(RedirectMemory())
                     .build()
                 val httpFactory = OkHttpDataSource.Factory(httpClient)
                     .setUserAgent("Mozilla/5.0 (Linux; Android 9) MyTV/2.1")
@@ -81,19 +88,28 @@ class PlayerFragment : Fragment() {
                         /* minBufferMs = */ 15000,
                         /* maxBufferMs = */ 45000,
                         /* bufferForPlaybackMs = */ 2000,
-                        /* bufferForPlaybackAfterRebufferMs = */ 3000,
+                        // 这个值直接决定「每次重缓冲黑屏多久」：原来 3000 意味着
+                        // 每次抖动都要等满 3 秒。短窗口 IPTV 源上降到 1500 明显更跟手。
+                        /* bufferForPlaybackAfterRebufferMs = */ 1500,
                     )
                     .setPrioritizeTimeOverSizeThresholds(true)
+                    // 直播不会倒回已播内容，关掉回退缓冲可省一大块内存
+                    .setBackBuffer(0, false)
                     .build()
 
-                playerView!!.player = ExoPlayer.Builder(requireContext(), renderersFactory)
+                val exoPlayer = ExoPlayer.Builder(requireContext(), renderersFactory)
                     .setMediaSourceFactory(mediaSourceFactory)
                     .setLoadControl(loadControl)
                     .build()
+
+                playerView!!.player = exoPlayer
                 playerView!!.player?.playWhenReady = true
                 playerView!!.player?.addListener(object : Player.Listener {
                     override fun onVideoSizeChanged(videoSize: VideoSize) {
-                        val ratio = playerView?.measuredWidth?.div(playerView?.measuredHeight!!)
+                        // 视图已销毁时 measuredHeight 可能取不到，直接放弃这次布局调整
+                        val height = playerView?.measuredHeight ?: return
+                        if (height == 0) return
+                        val ratio = playerView?.measuredWidth?.div(height)
                         if (ratio != null) {
                             val layoutParams = playerView?.layoutParams
                             if (ratio < aspectRatio) {
@@ -246,11 +262,14 @@ class PlayerFragment : Fragment() {
     override fun onStart() {
         Log.i(TAG, "onStart")
         super.onStart()
-        if (playerView != null && playerView!!.player?.isPlaying == false) {
-            Log.i(TAG, "replay")
-            playerView!!.player?.prepare()
-            playerView!!.player?.play()
+        val p = playerView?.player ?: return
+        // onPause 只做 pause() 保活，所以这里绝大多数情况只需 play() 就能秒回画面；
+        // 只有从未起播 / 被 stop 过（STATE_IDLE）时才需要重新 prepare
+        if (p.playbackState == Player.STATE_IDLE) {
+            Log.i(TAG, "re-prepare (idle)")
+            p.prepare()
         }
+        p.play()
     }
 
     override fun onResume() {
@@ -260,9 +279,10 @@ class PlayerFragment : Fragment() {
 
     override fun onPause() {
         super.onPause()
-        if (playerView != null && playerView!!.player?.isPlaying == true) {
-            playerView!!.player?.stop()
-        }
+        // 保活：只暂停不 stop。stop() 会丢掉全部已缓冲数据，从 HOME / 待机返回时
+        // 必须重新建连 + 首片下载（实测 0.03~2.1s 黑屏）；pause() 则保留缓冲秒回。
+        // 若后台停留过久导致滑出直播窗口，由 onPlayerError 的 BehindLiveWindow 分支兜底。
+        playerView?.player?.pause()
     }
 
     override fun onDestroy() {

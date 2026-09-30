@@ -177,7 +177,7 @@ class ApiClient {
                 .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
                 .hostnameVerifier { _, _ -> true }
 //                .proxy(proxy)
-                .dns(DnsCache())
+                .dns(DnsCache.shared)
 
             return enableTls12OnPreLollipop(builder).build()
 
