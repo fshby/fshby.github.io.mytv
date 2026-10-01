@@ -57,6 +57,12 @@ class PlayerFragment : Fragment() {
     private val playHandler = Handler(Looper.getMainLooper())
     private var pendingPlay: Runnable? = null
 
+    /** 当前播放的源地址（重缓冲归因用） */
+    private var currentPlayUrl: String? = null
+
+    /** 当前媒体项是否已进入过 READY（用于识别 READY→BUFFERING 的重缓冲换向） */
+    private var wasReady = false
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
@@ -124,6 +130,19 @@ class PlayerFragment : Fragment() {
                 pv.player = exoPlayer
                 pv.player?.playWhenReady = true
                 pv.player?.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            wasReady = true
+                        } else if (playbackState == Player.STATE_BUFFERING && wasReady) {
+                            // READY→BUFFERING 换向 = 真实重缓冲（初缓冲是 IDLE→BUFFERING，
+                            // 换台/重试会重置 wasReady，都不会误计）。归因到当前源，
+                            // 供播放时换选与下轮探测排序降权。
+                            wasReady = false
+                            currentPlayUrl?.let { SourceProfiles.noteStall(it) }
+                            Log.i(TAG, "rebuffer on current source")
+                        }
+                    }
+
                     override fun onVideoSizeChanged(videoSize: VideoSize) {
                         // 视图已销毁时 measuredHeight 可能取不到，直接放弃这次布局调整
                         val height = playerView?.measuredHeight ?: return
@@ -242,6 +261,27 @@ class PlayerFragment : Fragment() {
 
     @OptIn(UnstableApi::class)
     private fun startPlay(tvViewModel: TVViewModel) {
+        // 运行时重缓冲反馈：当前源被实播证实会卡（连续 ≥2 次）且存在更干净的备选时，
+        // 换选实播无劣迹的源。探测的速率快照测不出「快照时运气好、实播期带宽塌方」
+        // 的中转源（实测 204.12.224.154:88 排序第一、实播 110s 重缓冲 2 次）。
+        val urls = tvViewModel.getVideoUrls()
+        if (urls.size > 1) {
+            val cur = tvViewModel.getVideoUrlCurrent()
+            val curStalls = SourceProfiles.get(cur)?.stalls ?: 0
+            if (curStalls >= STALL_SWITCH_THRESHOLD) {
+                val better = urls.indices
+                    .filter { urls[it] != cur && (SourceProfiles.get(urls[it])?.stalls ?: 0) < curStalls }
+                    .minByOrNull { SourceProfiles.get(urls[it])?.stalls ?: 0 }
+                if (better != null) {
+                    tvViewModel.setVideoIndex(better)
+                    Log.i(
+                        TAG,
+                        "prefer stall-free source #${better} " +
+                                "(current has $curStalls stalls)"
+                    )
+                }
+            }
+        }
         val url = tvViewModel.getVideoUrlCurrent()
         if (url.isEmpty()) {
             // 空源频道直接跳过，避免用空地址 setMediaItem 后反复报错
@@ -250,6 +290,8 @@ class PlayerFragment : Fragment() {
             return
         }
         val mime = guessMimeType(url)
+        currentPlayUrl = url
+        wasReady = false
 
         // 起播目标偏移按「源画像」动态计算（探测阶段实测出目标时长与窗口长度）。
         //
@@ -343,5 +385,8 @@ class PlayerFragment : Fragment() {
 
     companion object {
         private const val TAG = "PlayerFragment"
+
+        /** 当前源累计重缓冲达到该值后，换台时优先换选实播无劣迹的备选源 */
+        private const val STALL_SWITCH_THRESHOLD = 2
     }
 }

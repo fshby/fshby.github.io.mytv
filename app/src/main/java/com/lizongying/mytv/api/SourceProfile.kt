@@ -28,6 +28,15 @@ data class SourceProfile(
     val demandKbps: Long = 0L,
     /** 推荐起播偏移（毫秒），由 [targetOffsetFor] 按真实分片边界算出；0 表示未知 */
     val targetOffsetMs: Long = 0L,
+    /**
+     * 运行时重缓冲次数（实播中 READY→BUFFERING 换向）。
+     *
+     * 探测的速率/富余是**一次性快照**，对「快照时运气好、实播期带宽塌方」的中转源
+     * 无能为力（实测 204.12.224.154:88 探测排序第一、实播 110 秒重缓冲 2 次）。
+     * 实播才是最终裁判：这里记录的重缓冲次数用于播放时换选与下轮探测排序降权，
+     * 并跨探测周期保留（探测重建画像时显式携带，不随快照归零）。
+     */
+    val stalls: Int = 0,
 ) {
 
     /**
@@ -128,16 +137,14 @@ data class SourceProfile(
  * 那次会话就没有任何实测数据。把画像落盘后，起播偏移在「没探测的那次」同样有效，
  * 不会退化成「有时生效有时不生效」。
  *
- * 文件格式（每行一条，URL 放最后，其余字段都是数字，读时按 \t 切分）：
- *   目标时长 \t 窗口长度 \t 分片数 \t 实测KB/s \t 需求KB/s \t 起播偏移 \t URL
+ * 文件格式（每行一条，URL 永远放最后，其余字段都是数字，读时按 \t 切分）：
+ *   目标时长 \t 窗口长度 \t 分片数 \t 实测KB/s \t 需求KB/s \t 起播偏移 \t 重缓冲次数 \t URL
+ * 兼容读取旧的 7 列行（无重缓冲列，按 0 处理），写入一律 8 列。
  */
 object SourceProfiles {
 
     private const val TAG = "SourceProfiles"
     private const val FILE_NAME = "mytv-sources.txt"
-
-    /** 每行的字段数（含 URL） */
-    private const val COLUMNS = 7
 
     private val map = ConcurrentHashMap<String, SourceProfile>()
 
@@ -149,6 +156,14 @@ object SourceProfiles {
     fun put(url: String, profile: SourceProfile) {
         if (url.isEmpty()) return
         map[url] = profile
+    }
+
+    /** 记录一次运行时重缓冲（实播裁决，探测快照看不到的劣化） */
+    fun noteStall(url: String) {
+        if (url.isEmpty()) return
+        val p = map[url] ?: return
+        map[url] = p.copy(stalls = p.stalls + 1)
+        Log.i(TAG, "stall #${p.stalls + 1} noted for ${url.substringBefore('?').takeLast(60)}")
     }
 
     /** 进程启动早期调用，避免首次换台时在主线程读文件 */
@@ -167,8 +182,9 @@ object SourceProfiles {
             f.forEachLine { line ->
                 if (line.isEmpty()) return@forEachLine
                 val p = line.split('\t')
-                if (p.size < COLUMNS) return@forEachLine
-                val url = p[6]
+                if (p.size < 7) return@forEachLine
+                // URL 永远在最后；第 7 列（重缓冲）只有新格式才有，旧行按 0 读
+                val url = p[p.size - 1]
                 if (url.isEmpty()) return@forEachLine
                 map[url] = SourceProfile(
                     targetDurationMs = p[0].toLongOrNull() ?: 0L,
@@ -177,6 +193,7 @@ object SourceProfiles {
                     kbps = p[3].toLongOrNull() ?: 0L,
                     demandKbps = p[4].toLongOrNull() ?: 0L,
                     targetOffsetMs = p[5].toLongOrNull() ?: 0L,
+                    stalls = if (p.size >= 8) p[6].toIntOrNull() ?: 0 else 0,
                 )
                 n++
             }
@@ -202,6 +219,7 @@ object SourceProfiles {
                     .append(p.kbps).append('\t')
                     .append(p.demandKbps).append('\t')
                     .append(p.targetOffsetMs).append('\t')
+                    .append(p.stalls).append('\t')
                     .append(url).append('\n')
             }
             file(context).writeText(sb.toString())

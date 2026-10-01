@@ -156,6 +156,16 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         return true
     }
 
+    fun getVideoUrls(): List<String> = _videoUrl.value ?: emptyList()
+
+    /** 设置当前源下标（带边界校验），供播放侧按实播重缓冲史换选更优源 */
+    fun setVideoIndex(index: Int) {
+        val urls = _videoUrl.value ?: return
+        if (index in urls.indices) {
+            _videoIndex.value = index
+        }
+    }
+
     companion object {
         private const val TAG = "TVViewModel"
     }

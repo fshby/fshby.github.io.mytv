@@ -1124,6 +1124,8 @@ object TVSource {
                 demandKbps = c.demandKbps,
                 // 按真实分片边界算起播偏移，随画像一起落盘（见 SourceProfile.targetOffsetFor）
                 targetOffsetMs = SourceProfile.targetOffsetFor(c.info.segDurations, lowHeadroom),
+                // 实播重缓冲史跨探测周期保留：快照归零会把「实播证实会卡」的源洗白
+                stalls = SourceProfiles.get(c.url)?.stalls ?: 0,
             )
         }
 
@@ -1133,6 +1135,9 @@ object TVSource {
             when {
                 // 1) 窗口正常的源优先
                 pa.tinyWindow != pb.tinyWindow -> if (pa.tinyWindow) 1 else -1
+                // 2) 实播重缓冲多的源降权：探测的速率快照测不出「运气好但实播卡」
+                //    的中转源，实播裁决优先于一切快照指标
+                pa.stalls != pb.stalls -> if (pa.stalls > pb.stalls) 1 else -1
                 else -> {
                     // 2) 实测富余倍数大的优先；算不出需求时按中性 1.0，
                     //    不因为「测不出需求」而冤枉一个可能没问题的源
