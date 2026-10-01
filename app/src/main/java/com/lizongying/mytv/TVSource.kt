@@ -1111,6 +1111,11 @@ object TVSource {
                 // 服务器不回 Content-Length（chunked / 无视 Range）时退回 playlist 声明的码率
                 else -> c.info.declaredKbps
             }
+            // 低富余源（实测速率 < 2× 需求，如跨洋中转）：垫片抬到窗口 2/3，
+            // 用实时性换流畅（切台初期薄垫子会被速度波动反复击穿）
+            val lowHeadroom =
+                c.kbps > 0L && c.demandKbps > 0L &&
+                    c.kbps.toFloat() / c.demandKbps < SourceProfile.LOW_HEADROOM_MAX
             c.profile = SourceProfile(
                 targetDurationMs = c.info.targetDurationMs,
                 windowMs = c.info.windowMs,
@@ -1118,7 +1123,7 @@ object TVSource {
                 kbps = c.kbps,
                 demandKbps = c.demandKbps,
                 // 按真实分片边界算起播偏移，随画像一起落盘（见 SourceProfile.targetOffsetFor）
-                targetOffsetMs = SourceProfile.targetOffsetFor(c.info.segDurations),
+                targetOffsetMs = SourceProfile.targetOffsetFor(c.info.segDurations, lowHeadroom),
             )
         }
 

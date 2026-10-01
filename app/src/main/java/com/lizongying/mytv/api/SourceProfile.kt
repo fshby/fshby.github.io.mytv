@@ -51,6 +51,10 @@ data class SourceProfile(
         const val MAX_CUSHION_MS = 30_000L
         /** 「窗口过小」阈值 */
         const val TINY_WINDOW_MS = 8_000L
+        /** 低富余源（headroom<2x）的起播垫片占窗口比例（伪实时模式） */
+        const val LOW_HEADROOM_WINDOW_FRACTION = 2.0 / 3.0
+        /** 低富余判定阈值：实测速率不足需求的该倍数 */
+        const val LOW_HEADROOM_MAX = 2.0f
 
         /**
          * 按**真实分片边界**算起播偏移，毫秒；无法计算返回 0。
@@ -67,6 +71,12 @@ data class SourceProfile(
          *     取垫片不超过目标值的那个分片起点——垫得最多但不过头；
          *  3. 连最后一片的时长都超过目标时（分片本身很长的源），退到倒数第 1 片。
          *
+         * [lowHeadroom]（实测下载速率 < 2× 实时需求，如跨洋中转源）时把目标垫片
+         * 抬到 **窗口的 2/3**，取它与「2 个平均分片」的较大者——链路富余贴 1.0x 时
+         * 薄垫子会被速度波动反复击穿（切台初期尤甚），这是用实时性换流畅
+         * （用户已接受「伪实时」代价）。仍受 MAX_CUSHION_MS 上限约束，
+         * 不会把长分片源垫成分钟级延迟。
+         *
          * 效果（用实测 209 个源回算，偏移按毫秒截断、定位按 media3 的整数微秒模型）：
          * 起播可垫内容中位 6s → 10s，「至少垫 1 片」的源 92 → 170 个，
          * 「至少垫 2 片」的源 4 → 52 个，而贴在窗口最旧片
@@ -76,7 +86,7 @@ data class SourceProfile(
          * 另外，**0 时长分片先剔除**：实测确有这种源（动作电影、TVBS 新闻台），
          * 它既不占时间也不可能成为起播位置，留着会把「身后留一片」的约束架空。
          */
-        fun targetOffsetFor(durs: List<Double>): Long {
+        fun targetOffsetFor(durs: List<Double>, lowHeadroom: Boolean = false): Long {
             val real = durs.filter { it > 0.0 }
             val n = real.size
             if (n < 2) return 0L
@@ -88,7 +98,12 @@ data class SourceProfile(
             }
             if (total <= 0.0) return 0L
 
-            val targetMs = (2 * total / n * 1000).coerceIn(
+            val avgCushionMs = 2 * total / n * 1000
+            val targetMs = if (lowHeadroom) {
+                maxOf(avgCushionMs, total * 1000.0 * LOW_HEADROOM_WINDOW_FRACTION)
+            } else {
+                avgCushionMs
+            }.coerceIn(
                 MIN_TARGET_OFFSET_MS.toDouble(),
                 MAX_CUSHION_MS.toDouble(),
             )
