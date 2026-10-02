@@ -76,6 +76,21 @@
     background: rgba(79,140,255,.12); color: #9cc0ff;
     padding: 2px 8px; border-radius: 6px; font-size: 13px;
   }
+  .tech-note { color: var(--muted); font-size: 14px; line-height: 1.9; }
+  .tech-note b { color: var(--text); }
+  .figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; margin-top: 18px; }
+  .figure {
+    background: #fff; border-radius: 14px; padding: 10px;
+    border: 1px solid rgba(255,255,255,.1);
+  }
+  .figure img { width: 100%; height: auto; display: block; border-radius: 8px; }
+  .figure figcaption { color: #3a4358; font-size: 12.5px; text-align: center; padding: 6px 6px 2px; }
+  .verify {
+    margin-top: 20px; padding: 16px 20px; border-radius: 12px;
+    background: rgba(46,158,91,.08); border: 1px solid rgba(46,158,91,.3);
+    color: var(--muted); font-size: 13.5px; line-height: 1.9;
+  }
+  .verify b { color: #7fd6a4; }
   .changelog { color: var(--muted); font-size: 14px; line-height: 2; }
   .changelog li { margin-left: 20px; }
   .changelog h3 { color: var(--text); font-size: 15px; margin: 22px 0 6px; }
@@ -126,6 +141,39 @@
       <span>落后直播边缘自动轻微加速追回，短窗口 IPTV 源不再周期性卡顿。</span></div>
     <div class="card"><div class="ico">🔄</div><b>应用自升级</b>
       <span>设置页一键检查更新，直接从本站下载新版本安装，无需电脑。</span></div>
+  </div>
+
+  <h2>播放兼容性深度调优 · 异常分析记</h2>
+  <p class="tech-note">
+    针对真机上的四类播放异常，做了从 <b>MPEG-TS 分片级取证</b>（音频 PES / PTS 解析）、流式 logcat、
+    到源出口实测的完整根因定位，并逐一落地兼容方案（<b>v2.3.0 后提交，随下个版本发布</b>）：
+    ①<b>切台起播卡顿</b>——固定 3s 偏移把播放点钉在直播边缘，改为按源画像在真实分片边界定位，垫 ≈2 片、分片级错误 300ms 短退避；
+    ②<b>梨园频道声音反复中断</b>——定位为源端音频轨道空洞（每 4s 仅 2~4 个音频包，同主机对照频道为 10 个），客户端规避 + 短窗口降权；
+    ③<b>网关型源偶发卡顿</b>——美国中转源 302 轮换后端导致时间轴错乱，token 型落地一次学习即固化（整场后端粘性），低富余源垫片加到窗口 2/3（伪实时换流畅）；
+    ④<b>「测得快、播着卡」的源</b>——运行时重缓冲按 URL 记入画像，排序惩罚 + 换台自动换选干净源。
+    完整复盘见 <a href="https://github.com/fshby/fshby.github.io.mytv/blob/ui-v218/docs/playback-analysis.md" style="color:#9cc0ff">docs/playback-analysis.md</a>。
+  </p>
+  <div class="figures">
+    <figure class="figure">
+      <img src="analysis/01-offset-mechanism.svg" alt="切台起播偏移机制：固定偏移钉在直播边缘 vs 按源画像分片边界定位">
+      <figcaption>切台起播位置机制 —— 旧策略钉在直播边缘（身后仅 1 片） vs 按源画像分片边界定位</figcaption>
+    </figure>
+    <figure class="figure">
+      <img src="analysis/02-liyuan-audio.svg" alt="梨园音频 PES 时间轴：成段空洞 vs 同主机对照频道均匀密排">
+      <figcaption>梨园频道音频包分布 —— 分片级解析：梨园音频成段空洞，同主机对照频道均匀密排</figcaption>
+    </figure>
+    <figure class="figure">
+      <img src="analysis/03-gateway-source.svg" alt="网关型源 302 结构：后端轮换与修复后的粘性">
+      <figcaption>网关型源结构 —— 302 轮询后端与三种卡顿形态，修复后整场锁定同一后端</figcaption>
+    </figure>
+    <figure class="figure">
+      <img src="analysis/04-stall-feedback.svg" alt="运行时重缓冲反馈闭环：实播表现参与选源决策">
+      <figcaption>运行时重缓冲反馈闭环 —— 实播表现沉淀为源画像，下次选源自动避开劣迹源</figcaption>
+    </figure>
+  </div>
+  <div class="verify">
+    <b>真机验证结论</b>：网关源 240s 播放 <b>0 错误 / 0 掉帧 / 0 重缓冲</b>；CCTV1 / CCTV13 及约 20 个央视频道走台零重缓冲、零掉帧；
+    劣迹源 110s 记 3 次重缓冲后，换台再进入自动换选干净源，换选后 110s <b>零重缓冲</b>；22 次快速换台零误计。
   </div>
 
   <h2>安装说明</h2>

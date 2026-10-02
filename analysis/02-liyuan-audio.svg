@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 470" font-family="'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif">
+  <rect width="920" height="470" fill="#ffffff"/>
+  <text x="460" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#1c2433">梨园频道卡顿根因 —— 源端音频轨道存在空洞</text>
+  <text x="460" y="58" text-anchor="middle" font-size="12.5" fill="#5a6478">MPEG-TS 分片解析（真实分片）：视频 100 PES/片且 PTS 严格连续；音频每片仅 2~4 个 PES，之间存在 0.5~3.3 秒空洞</text>
+
+  <!-- legend -->
+  <g font-size="11.5">
+    <rect x="60" y="78" width="14" height="14" fill="#2e6fb8"/><text x="80" y="89" fill="#5a6478">音频 PES 包</text>
+    <rect x="170" y="78" width="14" height="14" fill="#f2b8b8" stroke="#d64545"/><text x="190" y="89" fill="#5a6478">空洞区间（无音频数据）</text>
+    <line x1="360" y1="85" x2="400" y2="85" stroke="#b8c4d4" stroke-dasharray="4 3"/><text x="408" y="89" fill="#5a6478">分片边界（每片 4s）</text>
+  </g>
+
+  <!-- ===== 梨园 ===== -->
+  <text x="60" y="128" font-size="15" font-weight="700" fill="#8a2f2f">梨园 lypd（dxtx.hntv.tv）—— 异常</text>
+  <text x="700" y="128" font-size="12" fill="#8a2f2f">音频 6~20 kbps / 0.55~1.27% 载荷</text>
+  <!-- timeline -->
+  <line x1="60" y1="176" x2="860" y2="176" stroke="#b8c4d4" stroke-width="1"/>
+  <!-- segment boundaries at 60, 316.67, 573.33, 830 (12s window) -->
+  <g stroke="#b8c4d4" stroke-dasharray="4 3">
+    <line x1="316.7" y1="150" x2="316.7" y2="200"/>
+    <line x1="573.3" y1="150" x2="573.3" y2="200"/>
+    <line x1="830" y1="150" x2="830" y2="200"/>
+  </g>
+  <text x="188" y="144" text-anchor="middle" font-size="10.5" fill="#8a99b3">分片 1（4s）</text>
+  <text x="445" y="144" text-anchor="middle" font-size="10.5" fill="#8a99b3">分片 2（4s）</text>
+  <text x="701" y="144" text-anchor="middle" font-size="10.5" fill="#8a99b3">分片 3（4s）</text>
+  <!-- audio PES: seg1: 2 packets at ~0.6s,3.2s ; seg2: 3 at 0,0.8,2.4 ; seg3: 4 at 0,0.9,1.8,2.9 -->
+  <!-- x = 60 + t/12*770 -->
+  <g fill="#2e6fb8">
+    <rect x="94" y="166" width="22" height="20" rx="3"/>
+    <rect x="240" y="166" width="14" height="20" rx="3"/>
+    <rect x="318" y="166" width="30" height="20" rx="3"/>
+    <rect x="364" y="166" width="26" height="20" rx="3"/>
+    <rect x="468" y="166" width="18" height="20" rx="3"/>
+    <rect x="575" y="166" width="26" height="20" rx="3"/>
+    <rect x="638" y="166" width="24" height="20" rx="3"/>
+    <rect x="698" y="166" width="24" height="20" rx="3"/>
+    <rect x="760" y="166" width="16" height="20" rx="3"/>
+  </g>
+  <!-- gaps highlighted -->
+  <rect x="120" y="168" width="116" height="16" fill="#f2b8b8" opacity="0.75"/>
+  <rect x="394" y="168" width="70" height="16" fill="#f2b8b8" opacity="0.75"/>
+  <rect x="492" y="168" width="79" height="16" fill="#f2b8b8" opacity="0.75"/>
+  <rect x="778" y="168" width="48" height="16" fill="#f2b8b8" opacity="0.75"/>
+  <text x="460" y="212" text-anchor="middle" font-size="11.5" fill="#8a2f2f">PES 之间成段无音频 → 播放器读到空洞后一帧 PTS 前跳 1~2 秒 → UnexpectedDiscontinuityException → 音频输出重建</text>
+  <text x="460" y="228" text-anchor="middle" font-size="11.5" fill="#8a2f2f">真机 110 秒 38 次 Audio sink error（起播 1.75s 即开始，与分片周期同步）；47 秒后滑出直播窗口</text>
+
+  <!-- ===== 曲艺对照 ===== -->
+  <text x="60" y="276" font-size="15" font-weight="700" fill="#1f6b40">河南曲艺 jczy（同一台服务器）—— 正常</text>
+  <text x="700" y="276" font-size="12" fill="#1f6b40">音频 69 kbps / 2.49% 载荷</text>
+  <line x1="60" y1="324" x2="860" y2="324" stroke="#b8c4d4" stroke-width="1"/>
+  <g stroke="#b8c4d4" stroke-dasharray="4 3">
+    <line x1="316.7" y1="298" x2="316.7" y2="348"/>
+    <line x1="573.3" y1="298" x2="573.3" y2="348"/>
+    <line x1="830" y1="298" x2="830" y2="348"/>
+  </g>
+  <text x="188" y="292" text-anchor="middle" font-size="10.5" fill="#8a99b3">分片 1（4s）</text>
+  <text x="445" y="292" text-anchor="middle" font-size="10.5" fill="#8a99b3">分片 2（4s）</text>
+  <text x="701" y="292" text-anchor="middle" font-size="10.5" fill="#8a99b3">分片 3（4s）</text>
+  <!-- 10 packets per 4s => every 30.8px starting 60 -->
+  <g fill="#2e6fb8">
+    <rect x="62" y="314" width="24" height="20" rx="3"/><rect x="93" y="314" width="24" height="20" rx="3"/>
+    <rect x="124" y="314" width="24" height="20" rx="3"/><rect x="155" y="314" width="24" height="20" rx="3"/>
+    <rect x="186" y="314" width="24" height="20" rx="3"/><rect x="217" y="314" width="24" height="20" rx="3"/>
+    <rect x="248" y="314" width="24" height="20" rx="3"/><rect x="279" y="314" width="24" height="20" rx="3"/>
+    <rect x="310" y="314" width="24" height="20" rx="3"/><rect x="341" y="314" width="24" height="20" rx="3"/>
+    <rect x="372" y="314" width="24" height="20" rx="3"/><rect x="403" y="314" width="24" height="20" rx="3"/>
+    <rect x="434" y="314" width="24" height="20" rx="3"/><rect x="465" y="314" width="24" height="20" rx="3"/>
+    <rect x="496" y="314" width="24" height="20" rx="3"/><rect x="527" y="314" width="24" height="20" rx="3"/>
+    <rect x="558" y="314" width="24" height="20" rx="3"/><rect x="589" y="314" width="24" height="20" rx="3"/>
+    <rect x="620" y="314" width="24" height="20" rx="3"/><rect x="651" y="314" width="24" height="20" rx="3"/>
+    <rect x="682" y="314" width="24" height="20" rx="3"/><rect x="713" y="314" width="24" height="20" rx="3"/>
+    <rect x="744" y="314" width="24" height="20" rx="3"/><rect x="775" y="314" width="24" height="20" rx="3"/>
+    <rect x="806" y="314" width="24" height="20" rx="3"/>
+  </g>
+  <text x="460" y="356" text-anchor="middle" font-size="11.5" fill="#1f6b40">每片 10 个 PES（约 2.8KB/个）均匀密排、无空洞 → 排除 CDN / 主机问题，问题在梨园这个流本身</text>
+
+  <!-- bottom note -->
+  <rect x="60" y="384" width="800" height="66" rx="10" fill="#f4f6fa" stroke="#dbe2ec"/>
+  <text x="460" y="408" text-anchor="middle" font-size="12" fill="#1c2433" font-weight="700">结论：音频断续是源端缺陷（主因）；App 起播偏移算法又把播放位置钉在离边缘只剩一片处（放大）</text>
+  <text x="460" y="430" text-anchor="middle" font-size="11.5" fill="#5a6478">兼容方向：偏移算法在「无候选满足 ≤ 目标」时回落最旧片；窗口 ≤3 片纳入降权；探测期音频体检（&lt;30kbps / &lt;1.5% 载荷标记降序）</text>
+</svg>
