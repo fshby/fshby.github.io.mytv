@@ -2,9 +2,19 @@
 
 > 基于 [lizongying/my-tv](https://github.com/lizongying/my-tv) v2.1.8 界面基座深度定制。  
 > 适配国内电视 / 电视盒子，支持远程 m3u8 频道列表、自动探测去重、多源容错与独立自升级。  
-> 最新发布：**v2.3.0** ｜ [下载 APK / 在线升级](https://fshby.github.io/fshby.github.io.mytv/) ｜ 安装包名 `com.fshby.mytv`（可与官方版并存安装）
+> 最新发布：**v2.4.0** ｜ [下载 APK / 在线升级](https://fshby.github.io/fshby.github.io.mytv/) ｜ 安装包名 `com.fshby.mytv`（可与官方版并存安装）
 
-## 版本简介 · v2.3.0
+## 版本简介 · v2.4.0
+
+> 本次聚焦「播放兼容性深度调优」与「开机自启动」，全部基于真机（烽火 HG680-KF / 小米电视）取证与闭环验证。
+
+| 方向 | 修改点与优化项 |
+| --- | --- |
+| **播放兼容性** | 切台起播偏移改按源画像动态计算（真实分片边界垫 ≈2 片、钳 6~30s）；分片级 404 / 502 / 超时改为 300ms×4 短退避（默认策略一片坏要冻结 3 秒）；网关型源 token 落地一次学习即固化 + 整场后端粘性，失败就地回退网关；低带宽富余源起播垫片加到窗口 2/3（伪实时换流畅）；运行时重缓冲按 URL 记入源画像，排序惩罚 + 换台自动换选干净源；多源按实测吞吐富余排序、小窗口降权。 |
+| **开机自启动** | MIUI TV 等不投递 `BOOT_COMPLETED` 的系统改走**无障碍服务通道**，开机约 8 秒自动进入应用；被强杀（切信号源 / 后台清理）导致授权被撤销时，应用下次启动自动检测补写（需一次性 `adb shell pm grant com.fshby.mytv android.permission.WRITE_SECURE_SETTINGS`）；修复自启动拉起时的启动崩溃（LiveData 分发链内 `commitNow` 重入 FragmentManager）。 |
+| **稳定性与其它** | 内置频道列表快照兜底（无本地文件且无缓存时使用内置列表）；系统时钟异常（证书未生效 / 偏差 >24h）检测与 Toast 提示；完整播放异常分析报告与 4 张机制图入库（`docs/`）。 |
+
+### v2.3.0（上一版）
 
 | 方向 | 修改点与优化项 |
 | --- | --- |
@@ -21,7 +31,7 @@
 1. 访问 [fshby.github.io/fshby.github.io.mytv](https://fshby.github.io/fshby.github.io.mytv/) 下载最新 APK。
 2. 拷贝到 U 盘，插入电视 / 盒子安装；或开启 ADB 后用命令安装：
    ```shell
-   adb install my-tv-2.3.0.apk
+   adb install my-tv-2.4.0.apk
    ```
 3. 首次启动会自动拉取在线频道列表，稍等 3–8 秒即可观看。
 4. 进入 **设置页 → 检查更新**，应用会读取 [update/version.json](https://fshby.github.io/fshby.github.io.mytv/update/version.json)，检测到新版后可直接下载并覆盖安装。
