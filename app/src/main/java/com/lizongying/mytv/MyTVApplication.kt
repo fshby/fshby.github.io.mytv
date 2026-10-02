@@ -54,9 +54,13 @@ class MyTVApplication : Application() {
         }
 
         // MiTV 会在 force-stop（切信号源 str kill all third app / 后台清理）时撤销
-        // 无障碍授权，导致下次开机不自启；应用每次启动时自检并补写（幂等）
+        // 无障碍授权，导致下次开机不自启；应用每次启动时自检并补写（幂等）。
+        // 未就绪时把四项状态打进日志，便于 adb 侧一眼定位卡在哪一环。
         appScope.launch {
-            BootA11y.rearmIfMissing(this@MyTVApplication)
+            val healed = BootA11y.rearmIfMissing(this@MyTVApplication)
+            if (!healed) {
+                Log.i(TAG, "boot autostart not armed: ${BootA11y.status(this@MyTVApplication)}")
+            }
         }
 
         displayMetrics = DisplayMetrics()

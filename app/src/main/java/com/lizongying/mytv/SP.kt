@@ -58,8 +58,19 @@ object SP {
             }
         }
 
+    /**
+     * 开机自启开关。**默认 true**。
+     *
+     * 默认值从 false 改为 true 是 2026-10-02 的兼容修复：清数据 / `pm clear` /
+     * 卸载重装会同时抹掉 SP（开关回落默认值）与系统侧无障碍授权，而自愈函数
+     * 以本开关为闸门 → 此前「默认 false + 授权被清」形成死结：重新打开应用也
+     * 不会补授权，必须手动进设置页重开一次（源码级分析缺陷 C）。
+     * 默认改为 true 后，清数据场景可自动恢复武装；用户**显式**关掉开关时值被
+     * 持久化为 false，自愈会正确跳过，不违背用户意图。
+     * 注意：实际武装仍需系统侧 `WRITE_SECURE_SETTINGS`（adb 授予）才生效。
+     */
     var bootStartup: Boolean
-        get() = sp.getBoolean(KEY_BOOT_STARTUP, false)
+        get() = sp.getBoolean(KEY_BOOT_STARTUP, true)
         set(value) = sp.edit().putBoolean(KEY_BOOT_STARTUP, value).apply()
 
     var grid: Boolean

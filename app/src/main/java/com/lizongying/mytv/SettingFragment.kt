@@ -92,8 +92,29 @@ class SettingFragment : DialogFragment() {
                 } else {
                     activity?.let { BootA11y.disarm(it) }
                 }
+                refreshBootStatus()
                 (activity as MainActivity).settingDelayHide()
             }
+        }
+
+        // 一键修复：自启动开关置开后强制补齐系统侧授权条目 + 无障碍总开关。
+        // 把原先「授权缺失但界面无任何提示」的静默失败变成可自助恢复。
+        binding.bootFix.setOnClickListener {
+            SP.bootStartup = true
+            if (!binding.switchBootStartup.isChecked) {
+                // 赋值会同步触发上面的 listener（内部即调用 rearmIfMissing）
+                binding.switchBootStartup.isChecked = true
+            } else {
+                activity?.let { BootA11y.arm(it) }
+            }
+            refreshBootStatus()
+            val st = BootA11y.status(context)
+            Toast.makeText(
+                context,
+                if (st.armed) "开机自启授权已就绪" else "修复失败：需 adb 授予 WRITE_SECURE_SETTINGS",
+                Toast.LENGTH_LONG
+            ).show()
+            (activity as MainActivity).settingDelayHide()
         }
 
         binding.switchGrid.run {
@@ -160,6 +181,10 @@ class SettingFragment : DialogFragment() {
         binding.switchBootStartup.textSize = textSize
         binding.switchBootStartup.layoutParams = layoutParamsChannelSwitch
 
+        binding.bootStatus.textSize = application.px2PxFont(binding.bootStatus.textSize)
+        binding.bootFix.textSize = textSize
+        refreshBootStatus()
+
         binding.switchGrid.textSize = textSize
         binding.switchGrid.layoutParams = layoutParamsChannelSwitch
 
@@ -188,6 +213,24 @@ class SettingFragment : DialogFragment() {
         updateManager = UpdateManager(context, context.appVersionCode)
 
         return binding.root
+    }
+
+    /**
+     * 刷新「开机自启状态」四项自检：应用内开关 / 系统授权条目 / 无障碍总开关 / 写权限。
+     * 原先这四项之外的任何一项出问题都表现为「开机没反应且无任何提示」，
+     * 这里把它们显式暴露出来，让用户能自查。
+     */
+    private fun refreshBootStatus() {
+        val ctx = context ?: return
+        val b = _binding ?: return
+        val st = BootA11y.status(ctx)
+        b.bootStatus.text = getString(R.string.boot_status_prefix) + buildString {
+            append("开关").append(if (st.switchOn) "开" else "关")
+            append(" · 系统授权").append(if (st.entryPresent) "有" else "无")
+            append(" · 无障碍总开关").append(if (st.masterOn) "开" else "关")
+            append(" · ").append(if (st.writable) "可自愈" else "无写权限")
+            if (st.switchOn && !st.armed) append("（未就绪，可点下方修复）")
+        }
     }
 
     private fun requestInstallPermissions() {
