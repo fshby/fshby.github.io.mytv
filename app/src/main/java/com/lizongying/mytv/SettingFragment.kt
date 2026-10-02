@@ -123,25 +123,35 @@ class SettingFragment : DialogFragment() {
         // 唤醒时系统必须启动桌面=本应用，Activity 启动不受 stopped 态广播排除
         // 限制，从结构上绕开 MiTV「睡眠强杀 + 唤醒无广播」死结（报告 8.8 节）。
         // 仅跳转系统「默认桌面」设置由用户显式选择，应用不静默抢占桌面。
+        //
+        // 2026-10-02 真机修正：小米电视把 android.settings.HOME_SETTINGS 与
+        // MANAGE_DEFAULT_APPS_SETTINGS 一并指向空壳 com.android.tv.settings/
+        // .EmptyStubActivity —— 跳过去只会把应用切到后台（表现为「播放暂停」）
+        // 却什么界面都不显示。因此先探测是否真有设置界面，没有就不跳转、直接
+        // 说明本机不支持（绝不为了一个空操作把正在播的直播打断）。
         binding.bootHomeFix.setOnClickListener {
             val ctx = context
             if (ctx == null) {
                 (activity as MainActivity).settingDelayHide()
                 return@setOnClickListener
             }
-            if (isDefaultHome(ctx)) {
-                Toast.makeText(ctx, "已是开机直达桌面", Toast.LENGTH_SHORT).show()
-            } else {
-                try {
-                    startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
-                } catch (e: Exception) {
-                    Toast.makeText(
-                        ctx,
-                        "未找到桌面设置，可用 adb：cmd package set-home-activity com.fshby.mytv/com.lizongying.mytv.MainActivity",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+            when {
+                isDefaultHome(ctx) ->
+                    Toast.makeText(ctx, R.string.boot_home_already, Toast.LENGTH_SHORT).show()
+
+                !homeSettingsAvailable(ctx) ->
+                    Toast.makeText(ctx, R.string.boot_home_unsupported, Toast.LENGTH_LONG).show()
+
+                else -> runCatching { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }
+                    .onFailure {
+                        Toast.makeText(
+                            ctx,
+                            "未找到桌面设置，可用 adb：cmd package set-home-activity com.fshby.mytv/com.lizongying.mytv.MainActivity",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
             }
+            refreshBootStatus()
             (activity as MainActivity).settingDelayHide()
         }
 
@@ -216,6 +226,7 @@ class SettingFragment : DialogFragment() {
         binding.bootHomeStatus.textSize =
             application.px2PxFont(binding.bootHomeStatus.textSize)
         binding.bootHomeFix.textSize = textSize
+        binding.bootHomeHint.textSize = application.px2PxFont(binding.bootHomeHint.textSize)
 
         binding.switchGrid.textSize = textSize
         binding.switchGrid.layoutParams = layoutParamsChannelSwitch
@@ -263,12 +274,18 @@ class SettingFragment : DialogFragment() {
             append(" · ").append(if (st.writable) "可自愈" else "无写权限")
             if (st.switchOn && !st.armed) append("（未就绪，可点下方修复）")
         }
-        // HOME 直通模式状态：显示当前默认桌面
+        // HOME 直通模式状态：显示当前默认桌面；本机若无该设置界面则标记不可用
         val isOurs = isDefaultHome(ctx)
+        val home = currentHomePackage(ctx) ?: "未知"
         b.bootHomeStatus.text = getString(R.string.boot_home_status_prefix) + when {
             isOurs -> "已启用（本应用即桌面，唤醒必达）"
-            else -> "未启用（当前桌面 ${currentHomePackage(ctx)}）"
+            !homeSettingsAvailable(ctx) -> "本机不可用（系统固定使用 $home）"
+            else -> "未启用（当前桌面 $home）"
         }
+        b.bootHomeHint.text = getString(
+            if (homeSettingsAvailable(ctx)) R.string.boot_home_hint
+            else R.string.boot_home_hint_unsupported
+        )
     }
 
     private fun isDefaultHome(ctx: android.content.Context): Boolean =
@@ -281,6 +298,24 @@ class SettingFragment : DialogFragment() {
         )?.activityInfo?.packageName
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * 系统是否真的提供「默认桌面」设置界面。小米电视把 HOME_SETTINGS /
+     * MANAGE_DEFAULT_APPS_SETTINGS 都指向 com.android.tv.settings.EmptyStubActivity
+     * （空壳，无 UI），跳转只会让应用切后台、中断播放，因此必须先探测。
+     */
+    private fun homeSettingsAvailable(ctx: android.content.Context): Boolean {
+        val resolved = try {
+            ctx.packageManager.resolveActivity(
+                Intent(Settings.ACTION_HOME_SETTINGS),
+                PackageManager.MATCH_DEFAULT_ONLY
+            )
+        } catch (e: Exception) {
+            null
+        }
+        val name = resolved?.activityInfo?.name ?: return false
+        return !name.contains("Stub", ignoreCase = true)
     }
 
     private fun requestInstallPermissions() {

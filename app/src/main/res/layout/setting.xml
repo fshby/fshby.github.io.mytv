@@ -134,6 +134,13 @@
                 android:layout_height="wrap_content"
                 android:textSize="12sp"
                 android:text="@string/boot_home_fix" />
+            <TextView
+                android:id="@+id/boot_home_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="11sp"
+                android:textColor="#9E9E9E"
+                android:text="@string/boot_home_hint" />
             <Switch
                 android:id="@+id/switch_grid"
                 android:text="@string/title_grid"

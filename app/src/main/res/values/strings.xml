@@ -8,6 +8,10 @@
     <string name="boot_fix">修复开机自启授权</string>
     <string name="boot_home_status_prefix">开机直达桌面：</string>
     <string name="boot_home_fix">设为开机直达桌面</string>
+    <string name="boot_home_already">已是开机直达桌面（本应用即系统桌面）</string>
+    <string name="boot_home_unsupported">本机型系统未提供「默认桌面」设置界面（小米电视固定使用自带桌面），此方式在本机不可用。请改用下方说明的方式。</string>
+    <string name="boot_home_hint">说明：设为默认桌面后，待机唤醒会直接进入本应用（适用于支持第三方桌面的机型）。</string>
+    <string name="boot_home_hint_unsupported">本机型不支持（系统固定使用自带桌面）。推荐做法：遥控关机后再开机时，点开一次本应用即可；之后每次待机唤醒都会自动回到直播。彻底断电（排插/开关）关机则无需任何手动操作。</string>
     <string name="title_grid">频道列表采用网格样式</string>
     <string name="title_time">显示时间</string>
     <string name="clear">恢复默认</string>
