@@ -34,10 +34,18 @@
             android:name=".MainActivity"
             android:exported="true"
             android:keepScreenOn="true"
-            android:screenOrientation="landscape">
+            android:screenOrientation="landscape"
+            android:stateNotNeeded="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
+                <!-- HOME/LEANBACK_HOME：声明为可选桌面（仅声明不改变默认桌面）。
+                     用户把它设为默认桌面后，STR 待机唤醒时系统必须启动桌面=本应用，
+                     Activity 启动不受 stopped 态广播排除限制，从结构上绕开
+                     MiTV「睡眠强杀 + 唤醒无广播」的自启死结（详见报告 8.8 节）。 -->
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.LEANBACK_HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>

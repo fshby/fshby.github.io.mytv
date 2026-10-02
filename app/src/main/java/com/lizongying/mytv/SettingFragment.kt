@@ -1,9 +1,11 @@
 package com.lizongying.mytv
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.View.GONE
@@ -117,6 +119,32 @@ class SettingFragment : DialogFragment() {
             (activity as MainActivity).settingDelayHide()
         }
 
+        // 开机直达桌面（HOME 直通模式）：把本应用设为系统默认桌面后，STR 待机
+        // 唤醒时系统必须启动桌面=本应用，Activity 启动不受 stopped 态广播排除
+        // 限制，从结构上绕开 MiTV「睡眠强杀 + 唤醒无广播」死结（报告 8.8 节）。
+        // 仅跳转系统「默认桌面」设置由用户显式选择，应用不静默抢占桌面。
+        binding.bootHomeFix.setOnClickListener {
+            val ctx = context
+            if (ctx == null) {
+                (activity as MainActivity).settingDelayHide()
+                return@setOnClickListener
+            }
+            if (isDefaultHome(ctx)) {
+                Toast.makeText(ctx, "已是开机直达桌面", Toast.LENGTH_SHORT).show()
+            } else {
+                try {
+                    startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        ctx,
+                        "未找到桌面设置，可用 adb：cmd package set-home-activity com.fshby.mytv/com.lizongying.mytv.MainActivity",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            (activity as MainActivity).settingDelayHide()
+        }
+
         binding.switchGrid.run {
             isChecked = SP.grid
             setOnCheckedChangeListener { _, isChecked ->
@@ -185,6 +213,10 @@ class SettingFragment : DialogFragment() {
         binding.bootFix.textSize = textSize
         refreshBootStatus()
 
+        binding.bootHomeStatus.textSize =
+            application.px2PxFont(binding.bootHomeStatus.textSize)
+        binding.bootHomeFix.textSize = textSize
+
         binding.switchGrid.textSize = textSize
         binding.switchGrid.layoutParams = layoutParamsChannelSwitch
 
@@ -231,6 +263,24 @@ class SettingFragment : DialogFragment() {
             append(" · ").append(if (st.writable) "可自愈" else "无写权限")
             if (st.switchOn && !st.armed) append("（未就绪，可点下方修复）")
         }
+        // HOME 直通模式状态：显示当前默认桌面
+        val isOurs = isDefaultHome(ctx)
+        b.bootHomeStatus.text = getString(R.string.boot_home_status_prefix) + when {
+            isOurs -> "已启用（本应用即桌面，唤醒必达）"
+            else -> "未启用（当前桌面 ${currentHomePackage(ctx)}）"
+        }
+    }
+
+    private fun isDefaultHome(ctx: android.content.Context): Boolean =
+        currentHomePackage(ctx) == ctx.packageName
+
+    private fun currentHomePackage(ctx: android.content.Context): String? = try {
+        ctx.packageManager.resolveActivity(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+            PackageManager.MATCH_DEFAULT_ONLY
+        )?.activityInfo?.packageName
+    } catch (e: Exception) {
+        null
     }
 
     private fun requestInstallPermissions() {

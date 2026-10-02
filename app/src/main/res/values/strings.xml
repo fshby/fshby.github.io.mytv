@@ -6,6 +6,8 @@
     <string name="title_boot_startup">开机自启</string>
     <string name="boot_status_prefix">开机自启状态：</string>
     <string name="boot_fix">修复开机自启授权</string>
+    <string name="boot_home_status_prefix">开机直达桌面：</string>
+    <string name="boot_home_fix">设为开机直达桌面</string>
     <string name="title_grid">频道列表采用网格样式</string>
     <string name="title_time">显示时间</string>
     <string name="clear">恢复默认</string>
