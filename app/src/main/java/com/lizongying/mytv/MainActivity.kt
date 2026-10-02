@@ -352,7 +352,7 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
 
         supportFragmentManager.beginTransaction()
             .show(fragment)
-            .commitNow()
+            .commit()
     }
 
     private fun hideFragment(fragment: Fragment) {
@@ -362,7 +362,7 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
 
         supportFragmentManager.beginTransaction()
             .hide(fragment)
-            .commitNow()
+            .commit()
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
