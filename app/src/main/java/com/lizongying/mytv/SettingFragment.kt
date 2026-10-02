@@ -85,6 +85,13 @@ class SettingFragment : DialogFragment() {
             isChecked = SP.bootStartup
             setOnCheckedChangeListener { _, isChecked ->
                 SP.bootStartup = isChecked
+                // 开关与系统无障碍授权双向联动（需 adb 授予 WRITE_SECURE_SETTINGS，
+                // 未授予时静默降级，退回 adb 手动 settings put 的老路径）
+                if (isChecked) {
+                    activity?.let { BootA11y.rearmIfMissing(it) }
+                } else {
+                    activity?.let { BootA11y.disarm(it) }
+                }
                 (activity as MainActivity).settingDelayHide()
             }
         }

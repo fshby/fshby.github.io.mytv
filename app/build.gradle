@@ -90,6 +90,12 @@ android {
             path = file("CMakeLists.txt")
         }
     }
+
+    lint {
+        // WRITE_SECURE_SETTINGS 声明仅供 adb pm grant 使用（无障碍授权自愈），
+        // 并非要走系统签名安装，关闭该项检查
+        disable 'ProtectedPermissions'
+    }
 }
 
 static def VersionCode() {

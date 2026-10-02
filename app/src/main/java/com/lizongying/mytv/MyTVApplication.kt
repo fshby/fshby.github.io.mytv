@@ -53,6 +53,12 @@ class MyTVApplication : Application() {
             Log.i(TAG, "channel list preloaded in ${System.currentTimeMillis() - t0}ms")
         }
 
+        // MiTV 会在 force-stop（切信号源 str kill all third app / 后台清理）时撤销
+        // 无障碍授权，导致下次开机不自启；应用每次启动时自检并补写（幂等）
+        appScope.launch {
+            BootA11y.rearmIfMissing(this@MyTVApplication)
+        }
+
         displayMetrics = DisplayMetrics()
         realDisplayMetrics = DisplayMetrics()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
