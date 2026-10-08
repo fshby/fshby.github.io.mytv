@@ -2,9 +2,13 @@
 
 > 基于 [lizongying/my-tv](https://github.com/lizongying/my-tv) v2.1.8 界面基座深度定制。  
 > 适配国内电视 / 电视盒子，支持远程 m3u8 频道列表、自动探测去重、多源容错与独立自升级。  
-> 最新发布：**v2.4.1** ｜ [下载 APK / 在线升级](https://fshby.github.io/fshby.github.io.mytv/) ｜ 安装包名 `com.fshby.mytv`（可与官方版并存安装）
+> 最新发布：**v2.4.2** ｜ [下载 APK / 在线升级](https://fshby.github.io/fshby.github.io.mytv/) ｜ 安装包名 `com.fshby.mytv`（可与官方版并存安装）
 
-## 版本简介 · v2.4.1
+## 版本简介 · v2.4.2
+
+> 本次仅更换应用图标：启用全新设计的 logo（保留原图完整构图），并修复 logo 文件为 JPEG 误名 `.png` 导致资源编译失败的问题。**功能与 v2.4.1 完全一致**。
+
+### v2.4.1（上一版）
 
 > 本次聚焦「开机自启动可靠性」：v2.4.0 发布当日在小米电视真机上完成的三个修复（自启动全链路加固 / 待机唤醒拉起修正 / 桌面直达引导），全部真机闭环验证。
 
@@ -14,7 +18,7 @@
 | **待机唤醒拉起修复** | 旧版把所有拉起统一卡在开机后 10 分钟内，长待机后唤醒不再被拉起（真机 uptime 4727s 被拒实测）；改为「开机窗口 / 唤醒窗口」双判据 + 屏幕点亮/熄灭运行时接收器，点亮即拉、桌面窗口事件兜底，已回前台则去重；跳过路径打印判据快照，静默失败可 adb 定位。 |
 | **桌面直达** | Manifest 声明 HOME/LEANBACK_HOME 使本应用成为可选桌面候选（不改变默认桌面），在走默认桌面解析的 ROM 上待机唤醒即回本应用；设置页新增「开机直达桌面」状态与引导；对把该设置指向空壳页面的 ROM（小米电视）自动探测并提示本机不可用，不再打断播放。 |
 
-### v2.4.0（上一版）
+### v2.4.0（更早版本）
 
 > 本次聚焦「播放兼容性深度调优」与「开机自启动」，全部基于真机（烽火 HG680-KF / 小米电视）取证与闭环验证。
 
@@ -70,7 +74,7 @@
 1. 访问 [fshby.github.io/fshby.github.io.mytv](https://fshby.github.io/fshby.github.io.mytv/) 下载最新 APK。
 2. 拷贝到 U 盘，插入电视 / 盒子安装；或开启 ADB 后用命令安装：
    ```shell
-   adb install my-tv-2.4.1.apk
+   adb install my-tv-2.4.2.apk
    ```
 3. 首次启动会自动拉取在线频道列表，稍等 3–8 秒即可观看。
 4. 进入 **设置页 → 检查更新**，应用会读取 [update/version.json](https://fshby.github.io/fshby.github.io.mytv/update/version.json)，检测到新版后可直接下载并覆盖安装。
