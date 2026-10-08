@@ -3,5 +3,5 @@
     <color name="white">#FFF</color>
     <color name="focus">#0096a6</color>
     <color name="blur">#223239</color>
-    <color name="ic_launcher_background">#FCF5E7</color>
+    <color name="ic_launcher_background">#223239</color>
 </resources>
