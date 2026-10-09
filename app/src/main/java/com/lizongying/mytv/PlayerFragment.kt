@@ -22,7 +22,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -33,6 +32,7 @@ import com.lizongying.mytv.api.RedirectMemory
 import com.lizongying.mytv.api.SourceProfiles
 import com.lizongying.mytv.databinding.PlayerBinding
 import com.lizongying.mytv.models.TVViewModel
+import com.lizongying.mytv.player.Mp2RenderersFactory
 import okhttp3.OkHttpClient
 import java.net.NoRouteToHostException
 import java.net.SocketException
@@ -154,7 +154,10 @@ class PlayerFragment : Fragment() {
                     // 而不是默认那套 0/1/2s 长退避（一片坏 = 冻结约 3 秒）
                     .setLoadErrorHandlingPolicy(MyLoadErrorHandlingPolicy())
 
-                val renderersFactory = DefaultRenderersFactory(requireContext())
+                // 内置 MP2 软解（libmad）：IPTV 聚合源里 MPEG-1 Layer II 很常见，
+                // 而 Android 从不保证支持 audio/mpeg-L2（AOSP 的 MP3 软解只有
+                // Layer III），缺了它这些源就是「有画面、没声音、还不报错」
+                val renderersFactory = Mp2RenderersFactory(requireContext())
                     .setEnableDecoderFallback(true)
 
                 // 缓冲参数必须远小于短窗口源（IPTV 常见 4x5s≈20s 窗口）的直播窗口，
@@ -220,10 +223,11 @@ class PlayerFragment : Fragment() {
                         context?.let { SourceProfiles.persist(it) }
                         if (!tryAudioFailover()) {
                             // 没有可信的备选源：别动播放（画面还在），但必须让用户知道原因，
-                            // 否则「有画面没声音」会被当成 App 的玄学故障
+                            // 否则「有画面没声音」会被当成 App 的玄学故障。
+                            // 注意：MP2 已由内置 libmad 软解覆盖，走到这里的都是更冷门的编码。
                             Toast.makeText(
                                 requireContext(),
-                                "该源音频编码本机不支持（常见为MP2），只有画面无声音",
+                                "该源音频编码本机无法解码，只有画面无声音",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
