@@ -37,6 +37,18 @@ data class SourceProfile(
      * 并跨探测周期保留（探测重建画像时显式携带，不随快照归零）。
      */
     val stalls: Int = 0,
+    /**
+     * 本机**解不了**这个源的音频（实播裁决，不是探测结论）。
+     *
+     * 最典型的是 IPTV 老制式的 MPEG-1 Layer II（MP2）音频：media3 会把它标成
+     * `audio/mpeg-L2`，而 Android 从不强制支持这个格式——AOSP 自带的 MP3 软解
+     * （pvmp3）只有 Layer III，厂商硬解一般只有 AAC/AC3。结果是音频渲染器被
+     * 整个禁用：**画面正常、无声、且不报任何错误**，用户完全不知道为什么。
+     *
+     * 只有在实播确认（Tracks 里音频轨道存在但无任何 FORMAT_HANDLED）后才置位，
+     * 用于播放时跳过这类源、以及给用户一句明确的解释，而不是静默吞掉。
+     */
+    val audioUnsupported: Boolean = false,
 ) {
 
     /**
@@ -138,8 +150,8 @@ data class SourceProfile(
  * 不会退化成「有时生效有时不生效」。
  *
  * 文件格式（每行一条，URL 永远放最后，其余字段都是数字，读时按 \t 切分）：
- *   目标时长 \t 窗口长度 \t 分片数 \t 实测KB/s \t 需求KB/s \t 起播偏移 \t 重缓冲次数 \t URL
- * 兼容读取旧的 7 列行（无重缓冲列，按 0 处理），写入一律 8 列。
+ *   目标时长 \t 窗口长度 \t 分片数 \t 实测KB/s \t 需求KB/s \t 起播偏移 \t 重缓冲次数 \t 音频不可解 \t URL
+ * 兼容读取旧的 7/8 列行（缺的列按 0/false 处理），写入一律 9 列。
  */
 object SourceProfiles {
 
@@ -164,6 +176,20 @@ object SourceProfiles {
         val p = map[url] ?: return
         map[url] = p.copy(stalls = p.stalls + 1)
         Log.i(TAG, "stall #${p.stalls + 1} noted for ${url.substringBefore('?').takeLast(60)}")
+    }
+
+    /**
+     * 记录一次实播裁决：这个源的音频本机解不了（画面正常但无声）。
+     *
+     * 只置位、不清除——「解不了音频」是设备能力问题，不是源的瞬时状态，
+     * 不会因为多播几次就变好。除非换设备（换机后缓存随 cacheDir 一起消失）。
+     */
+    fun noteAudioUnsupported(url: String) {
+        if (url.isEmpty()) return
+        if (map[url]?.audioUnsupported == true) return
+        val p = map[url]
+        map[url] = (p ?: SourceProfile()).copy(audioUnsupported = true)
+        Log.i(TAG, "audio unsupported noted for ${url.substringBefore('?').takeLast(60)}")
     }
 
     /**
@@ -210,6 +236,7 @@ object SourceProfiles {
                     demandKbps = p[4].toLongOrNull() ?: 0L,
                     targetOffsetMs = p[5].toLongOrNull() ?: 0L,
                     stalls = if (p.size >= 8) p[6].toIntOrNull() ?: 0 else 0,
+                    audioUnsupported = p.size >= 9 && p[7] == "1",
                 )
                 n++
             }
@@ -226,21 +253,36 @@ object SourceProfiles {
             val keep = HashSet<String>(urls.size * 2)
             keep.addAll(urls)
             map.keys.retainAll(keep)
-
-            val sb = StringBuilder(map.size * 96)
-            map.forEach { (url, p) ->
-                sb.append(p.targetDurationMs).append('\t')
-                    .append(p.windowMs).append('\t')
-                    .append(p.segments).append('\t')
-                    .append(p.kbps).append('\t')
-                    .append(p.demandKbps).append('\t')
-                    .append(p.targetOffsetMs).append('\t')
-                    .append(p.stalls).append('\t')
-                    .append(url).append('\n')
-            }
-            file(context).writeText(sb.toString())
+            write(context)
             Log.i(TAG, "save ${map.size} source profiles")
         }.onFailure { Log.e(TAG, "save failed", it) }
+    }
+
+    /**
+     * 不裁剪地即时落盘。
+     *
+     * 「音频本机不可解」这类实播裁决发生在换台过程中，调用方手里往往只有当前
+     * 频道的源列表——若走 [save] 会把其它频道的画像全部裁掉。所以单独提供
+     * 一个只写不裁的入口，让重要结论马上过电（App 被杀也不丢）。
+     */
+    fun persist(context: Context) {
+        runCatching { write(context) }.onFailure { Log.e(TAG, "persist failed", it) }
+    }
+
+    private fun write(context: Context) {
+        val sb = StringBuilder(map.size * 96)
+        map.forEach { (url, p) ->
+            sb.append(p.targetDurationMs).append('\t')
+                .append(p.windowMs).append('\t')
+                .append(p.segments).append('\t')
+                .append(p.kbps).append('\t')
+                .append(p.demandKbps).append('\t')
+                .append(p.targetOffsetMs).append('\t')
+                .append(p.stalls).append('\t')
+                .append(if (p.audioUnsupported) '1' else '0').append('\t')
+                .append(url).append('\n')
+        }
+        file(context).writeText(sb.toString())
     }
 
     private fun file(context: Context): File = File(context.cacheDir, FILE_NAME)

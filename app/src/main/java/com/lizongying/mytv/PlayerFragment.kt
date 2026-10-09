@@ -8,12 +8,15 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
+import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.fragment.app.Fragment
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -73,6 +76,15 @@ class PlayerFragment : Fragment() {
      *  - 阻止消耗重试预算 / 轮换备用源（否则网络恢复时重试额度已耗尽）。
      */
     private var awaitingNetwork = false
+
+    /**
+     * 本次换台内是否已经处理过「音频本机不可解」。
+     *
+     * onTracksChanged 在每次 prepare 后都会回调，重试/重建也会再触发；
+     * 没有这个门闩的话，一个 MP2 源会在每次重试时反复换源、反复弹提示。
+     * 只在用户显式换台（[play]）时复位。
+     */
+    private var audioFixTried = false
 
     /**
      * 看门狗：兜底「静默卡死」。
@@ -189,6 +201,31 @@ class PlayerFragment : Fragment() {
                                 // 恢复后换台反而换选到更差的源（自我伤害）
                                 Log.i(TAG, "rebuffer while offline, not attributed")
                             }
+                        }
+                    }
+
+                    override fun onTracksChanged(tracks: Tracks) {
+                        super.onTracksChanged(tracks)
+                        if (audioFixTried) return
+                        if (!hasUndecodableAudio(tracks)) return
+                        audioFixTried = true
+                        val url = currentPlayUrl ?: return
+                        Log.w(
+                            TAG,
+                            "audio not decodable on this device (e.g. MP2), " +
+                                    "video continues without sound: ${url.substringBefore('?').takeLast(60)}"
+                        )
+                        // 记入画像（持久化）：换台/换源时据此跳过这类源
+                        SourceProfiles.noteAudioUnsupported(url)
+                        context?.let { SourceProfiles.persist(it) }
+                        if (!tryAudioFailover()) {
+                            // 没有可信的备选源：别动播放（画面还在），但必须让用户知道原因，
+                            // 否则「有画面没声音」会被当成 App 的玄学故障
+                            Toast.makeText(
+                                requireContext(),
+                                "该源音频编码本机不支持（常见为MP2），只有画面无声音",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
 
@@ -353,6 +390,8 @@ class PlayerFragment : Fragment() {
         this.tvViewModel = tvViewModel
         transientRetries = 0
         sourceRotations = 0
+        // 用户主动换台：重新开放「音频不可解」的一次性处理机会
+        audioFixTried = false
         // 用户主动换台：退出「等待网络」态，按新频道正常起播
         awaitingNetwork = false
         // 换台去抖：连续按键/换台时取消上一次未起播的请求，350ms 内只播最后一次
@@ -373,17 +412,28 @@ class PlayerFragment : Fragment() {
         val urls = tvViewModel.getVideoUrls()
         if (urls.size > 1) {
             val cur = tvViewModel.getVideoUrlCurrent()
-            val curStalls = SourceProfiles.get(cur)?.stalls ?: 0
-            if (curStalls >= STALL_SWITCH_THRESHOLD) {
+            val curProf = SourceProfiles.get(cur)
+            val curStalls = curProf?.stalls ?: 0
+            // 当前源有实播劣迹（频繁重缓冲）或音频本机解不了（无声）时，
+            // 换选更干净的源。比较器与 tryAudioFailover 一致：先「探测证实活着」，
+            // 再劣迹最少——不能硬性要求 kbps>0，部分源拒绝探测请求却允许正常播放。
+            if (curStalls >= STALL_SWITCH_THRESHOLD || curProf?.audioUnsupported == true) {
                 val better = urls.indices
-                    .filter { urls[it] != cur && (SourceProfiles.get(urls[it])?.stalls ?: 0) < curStalls }
-                    .minByOrNull { SourceProfiles.get(urls[it])?.stalls ?: 0 }
+                    .filter { urls[it] != cur }
+                    .filter { (SourceProfiles.get(urls[it])?.audioUnsupported) != true }
+                    .minWithOrNull(
+                        compareBy(
+                            { !((SourceProfiles.get(urls[it])?.kbps ?: 0L) > 0L) },
+                            { SourceProfiles.get(urls[it])?.stalls ?: 0 },
+                        )
+                    )
                 if (better != null) {
                     tvViewModel.setVideoIndex(better)
                     Log.i(
                         TAG,
-                        "prefer stall-free source #${better} " +
-                                "(current has $curStalls stalls)"
+                        "prefer source #$better (current: " +
+                                (if (curProf?.audioUnsupported == true) "audio-unsupported " else "") +
+                                "$curStalls stalls)"
                     )
                 }
             }
@@ -439,6 +489,70 @@ class PlayerFragment : Fragment() {
             val tvVolume = tvViewModel.getTV().volume
             volume = if (tvVolume < 0.2F) 1.0F else tvVolume.coerceAtMost(1.0F)
         }
+    }
+
+    /**
+     * 判断媒体里是否**有音频轨道、但没有任何一条能被本机解码**。
+     *
+     * 走 media3 的 Tracks 能力判定（getTrackSupport），不用自己枚举 MediaCodec：
+     * 音频轨道存在但全部 FORMAT_UNSUPPORTED_TYPE，正是「画面正常却无声且不报错」
+     * 的唯一形态（典型：IPTV 的 MPEG-1 Layer II / MP2 音频）。
+     * 注意：流里压根没有音频轨道（纯画面）时返回 false，不误伤。
+     */
+    private fun hasUndecodableAudio(tracks: Tracks): Boolean {
+        var hasAudio = false
+        var handled = false
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                hasAudio = true
+                if (group.getTrackSupport(i) == C.FORMAT_HANDLED) handled = true
+            }
+        }
+        return hasAudio && !handled
+    }
+
+    /**
+     * 音频解不了时的守卫式换源：换到「音频本机可解」且画像最优的备选源。
+     *
+     * 为什么按优先级挑而不是硬性过滤：探测对部分源拿不到速率快照（源对探测请求
+     * 返回 404/拒绝，但正常播放请求带 UA 就能拿到），如果硬性要求 kbps>0，
+     * 会把这种「探测看不见、实播却正常」的源错杀掉（实测 CCTV9 的 107.150.60.122
+     * 探测 kbps=0、实播正常出声）。所以：排除已知音频不可解的源，剩下的按
+     * 画像质量排序；真换到死源时还有 onPlayerError → 轮换那条链路兜底。
+     * 返回 true 表示已发起换源，调用方不必再弹提示。
+     */
+    private fun tryAudioFailover(): Boolean {
+        val vm = tvViewModel ?: return false
+        val urls = vm.getVideoUrls()
+        if (urls.size < 2) return false
+        val cur = vm.getVideoUrlCurrent()
+
+        class Cand(val index: Int, val stalls: Int, val alive: Boolean)
+
+        val target = urls.indices
+            .filter { urls[it] != cur }
+            .filter { (SourceProfiles.get(urls[it])?.audioUnsupported) != true }
+            .map {
+                Cand(
+                    it,
+                    SourceProfiles.get(urls[it])?.stalls ?: 0,
+                    (SourceProfiles.get(urls[it])?.kbps ?: 0L) > 0L,
+                )
+            }
+            .minWithOrNull(
+                // ① 探测证实活着（kbps>0）的优先——但不能硬性过滤，部分源拒绝探测
+                //    请求却允许正常播放（实测 107.150.60.122 探测 kbps=0、实播正常出声）；
+                // ② 其次劣迹（重缓冲）最少的
+                compareBy({ !it.alive }, { it.stalls })
+            )
+            ?: return false
+        Log.i(TAG, "audio failover -> source #${target.index} (${urls[target.index].substringBefore('?').takeLast(50)})")
+        transientRetries = 0
+        sourceRotations = 0
+        vm.setVideoIndex(target.index)
+        startPlay(vm)
+        return true
     }
 
     /**
