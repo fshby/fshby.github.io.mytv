@@ -1,0 +1,10 @@
+# libmad 的 .dat 是被 C 预处理器 `#include` 进源码的数据表，
+# 行尾一旦被 CRLF 污染，数值会带上 \r 直接编译失败 —— 必须按原始字节处理
+app/src/main/cpp/thirdparty/libmad/*.dat -text
+
+# libmad 源码与本项目新增的 native/Kotlin 源文件统一 LF
+app/src/main/cpp/thirdparty/libmad/*.c text eol=lf
+app/src/main/cpp/thirdparty/libmad/*.h text eol=lf
+app/src/main/cpp/thirdparty/libmad/config.h text eol=lf
+app/src/main/cpp/thirdparty/libmad/README.md text eol=lf
+app/src/main/cpp/mp2dec_jni.c text eol=lf
