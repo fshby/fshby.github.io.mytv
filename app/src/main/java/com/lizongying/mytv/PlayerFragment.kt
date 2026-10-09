@@ -31,6 +31,8 @@ import com.lizongying.mytv.api.SourceProfiles
 import com.lizongying.mytv.databinding.PlayerBinding
 import com.lizongying.mytv.models.TVViewModel
 import okhttp3.OkHttpClient
+import java.net.NoRouteToHostException
+import java.net.SocketException
 import java.util.concurrent.TimeUnit
 
 
@@ -62,6 +64,46 @@ class PlayerFragment : Fragment() {
 
     /** 当前媒体项是否已进入过 READY（用于识别 READY→BUFFERING 的重缓冲换向） */
     private var wasReady = false
+
+    /**
+     * 是否正在等待网络恢复。
+     *
+     * 断网期间播放器报错属于预期现象，此标记用于：
+     *  - 抑制「播放错误」误导性文案（真实原因是网络断了，不是源坏了）；
+     *  - 阻止消耗重试预算 / 轮换备用源（否则网络恢复时重试额度已耗尽）。
+     */
+    private var awaitingNetwork = false
+
+    /**
+     * 看门狗：兜底「静默卡死」。
+     *
+     * 断网重连后最常见的坏形态不是 onPlayerError，而是播放器**卡在 BUFFERING
+     * 没有任何错误回调**——加载器一轮轮重试、播放器干等，既不报错也不出画面。
+     * 此时错误重试链路完全不会被触发，用户看到的就是「网络早回来了，画面却没回来」。
+     *
+     * 另外两类场景也由它兜底：
+     *  - 系统没有发出网络回调（路由器 WAN 闪断、链路没变但出口换了）；
+     *  - 播放器停在错误态后重试链路因列表/观察者重建而中断。
+     */
+    private val watchdog = object : Runnable {
+        override fun run() {
+            handler.removeCallbacks(this)
+            handler.postDelayed(this, WATCHDOG_INTERVAL_MS)
+            checkStuck()
+        }
+    }
+
+    /** 上一次确认「播放正常」的时间戳（READY 或 isPlaying 时刷新） */
+    private var lastHealthyAt = 0L
+
+    /** 稳定播放满 [STABLE_DECAY_MS] 后给当前源的劣迹计数减一票（可自愈，防冤案） */
+    private val stableDecay = Runnable {
+        if (playerView?.player?.isPlaying == true) {
+            SourceProfiles.decayStall(currentPlayUrl ?: "")
+        }
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -133,13 +175,20 @@ class PlayerFragment : Fragment() {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY) {
                             wasReady = true
+                            lastHealthyAt = System.currentTimeMillis()
                         } else if (playbackState == Player.STATE_BUFFERING && wasReady) {
                             // READY→BUFFERING 换向 = 真实重缓冲（初缓冲是 IDLE→BUFFERING，
                             // 换台/重试会重置 wasReady，都不会误计）。归因到当前源，
                             // 供播放时换选与下轮探测排序降权。
                             wasReady = false
-                            currentPlayUrl?.let { SourceProfiles.noteStall(it) }
-                            Log.i(TAG, "rebuffer on current source")
+                            if (PlaybackRecovery.isOnline) {
+                                currentPlayUrl?.let { SourceProfiles.noteStall(it) }
+                                Log.i(TAG, "rebuffer on current source")
+                            } else {
+                                // 断网导致的重缓冲与源质量无关，记进去会把好源标成劣迹源，
+                                // 恢复后换台反而换选到更差的源（自我伤害）
+                                Log.i(TAG, "rebuffer while offline, not attributed")
+                            }
                         }
                     }
 
@@ -178,6 +227,22 @@ class PlayerFragment : Fragment() {
                                 return
                             }
                             cause = cause.cause
+                        }
+
+                        // 断网 / 网络不可达：这不是「源坏了」，绝不能消耗重试预算或轮换备用源——
+                        // 否则网络恢复时重试额度与源轮换上限已用尽，播放器会停在错误屏不再自愈。
+                        // 这里只标记等待网络，真正的重连由 PlaybackRecovery 在网络恢复后驱动。
+                        if (PlaybackRecovery.isOffline || isNetworkUnreachable(error)) {
+                            val offline = PlaybackRecovery.isOffline
+                            if (!awaitingNetwork) {
+                                Log.i(
+                                    TAG,
+                                    "network unreachable, wait for recovery (offline=$offline)"
+                                )
+                                awaitingNetwork = true
+                                tvViewModel?.setErrInfo(WAIT_NETWORK_MSG)
+                            }
+                            return
                         }
 
                         // 瞬时源错误（404/连接抖动等）：先静默重试当前源，
@@ -224,23 +289,62 @@ class PlayerFragment : Fragment() {
                         super.onIsPlayingChanged(isPlaying)
                         if (isPlaying) {
                             transientRetries = 0
+                            lastHealthyAt = System.currentTimeMillis()
+                            // 真正播起来了才算恢复完成：此时才清掉「等待网络」提示
+                            awaitingNetwork = false
                             tvViewModel?.setErrInfo("")
+                            // 连续稳定播放一分钟后给源画像减一票劣迹，
+                            // 让被断网冤枉的源有机会自愈（真烂的源播不满这段时间）
+                            handler.removeCallbacks(stableDecay)
+                            handler.postDelayed(stableDecay, STABLE_DECAY_MS)
+                        } else {
+                            handler.removeCallbacks(stableDecay)
                         }
                     }
                 })
             }
         })
-        // 断网恢复后自动重连当前频道；播放正常时 isPlaying 守卫会忽略
-        PlaybackRecovery.listener = {
-            playerView?.player?.let { p ->
-                if (!p.isPlaying) {
-                    Log.i(TAG, "network restored, re-prepare current channel")
-                    p.prepare()
-                    p.play()
-                }
+        // 断网恢复后自动重连当前频道（由 PlaybackRecovery 按退避计划驱动多次尝试）；
+        // 没在收看任何频道、或本来就在正常播放时，needsRecovery() 返回 false，
+        // 恢复链路会直接放弃，不打扰正常播放
+        PlaybackRecovery.listener = object : PlaybackRecovery.Listener {
+            override fun needsRecovery(): Boolean =
+                tvViewModel != null && playerView?.player?.isPlaying != true
+
+            override fun onNetworkLost() {
+                if (awaitingNetwork) return
+                awaitingNetwork = true
+                // 明确告知用户「等网络」，而不是让错误屏显示「播放错误」这种误导性归因
+                tvViewModel?.setErrInfo(WAIT_NETWORK_MSG)
+            }
+
+            override fun onNetworkAvailable() {
+                // 不在这里清文案：等 onIsPlayingChanged(true) 确认真的播起来再清。
+                // 同时把健康计时清零，让看门狗在下一个巡检周期（≤5s）就立即尝试重建，
+                // 而不是再等满 20s 的卡死判定——网络都回来了，没必要让用户多等。
+                lastHealthyAt = 0L
+                Log.i(TAG, "network available, will try to recover")
+            }
+
+            override fun onRecoverAttempt(attempt: Int) {
+                val vm = tvViewModel ?: return
+                val p = playerView?.player ?: return
+                if (p.isPlaying) return
+                // 每次恢复尝试都是一次全新的重试预算；否则断网期间消耗的上限
+                // 会让恢复后的 failover 直接失效
+                transientRetries = 0
+                sourceRotations = 0
+                Log.i(TAG, "recover attempt #$attempt: ${vm.getTV().title}")
+                // 断网期间 player 可能已进入 error/idle，单独 prepare() 不可靠，
+                // 直接按当前源重建媒体项（内含 setMediaItem + prepare + play）
+                startPlay(vm)
             }
         }
         (activity as? MainActivity)?.fragmentReady(TAG)
+        // 看门狗启动：兜底「无错误回调的静默卡死」与「网络回调缺失」
+        lastHealthyAt = System.currentTimeMillis()
+        handler.removeCallbacks(watchdog)
+        handler.postDelayed(watchdog, WATCHDOG_INTERVAL_MS)
         return _binding!!.root
     }
 
@@ -249,6 +353,8 @@ class PlayerFragment : Fragment() {
         this.tvViewModel = tvViewModel
         transientRetries = 0
         sourceRotations = 0
+        // 用户主动换台：退出「等待网络」态，按新频道正常起播
+        awaitingNetwork = false
         // 换台去抖：连续按键/换台时取消上一次未起播的请求，350ms 内只播最后一次
         pendingPlay?.let { playHandler.removeCallbacks(it) }
         val r = Runnable {
@@ -292,6 +398,8 @@ class PlayerFragment : Fragment() {
         val mime = guessMimeType(url)
         currentPlayUrl = url
         wasReady = false
+        // 起播宽限：初缓冲在弱盒子上可能持续数秒，这段时间内不应被看门狗判定为卡死
+        lastHealthyAt = System.currentTimeMillis()
 
         // 起播目标偏移按「源画像」动态计算（探测阶段实测出目标时长与窗口长度）。
         //
@@ -331,6 +439,61 @@ class PlayerFragment : Fragment() {
             val tvVolume = tvViewModel.getTV().volume
             volume = if (tvVolume < 0.2F) 1.0F else tvVolume.coerceAtMost(1.0F)
         }
+    }
+
+    /**
+     * 判断异常链里是否含「网络不可达」类错误。
+     *
+     * 只认**明确表示链路不通**的错误：`NoRouteToHostException`、socket 的
+     * ENETUNREACH / ENETDOWN / EHOSTUNREACH / "network is unreachable"。
+     *
+     * 刻意**不**把 `UnknownHostException` 与 `ConnectException` 算进来：在链路正常的
+     * 情况下它们分别代表「该域名解析不了」与「对端拒绝连接」，都属于源本身的问题，
+     * 应该按原有的 重试→换源 流程处理，否则坏源会被无限当作断网等待。
+     * 整网断开的情形由 `PlaybackRecovery.isOffline` 覆盖（此时任何错误都不消耗预算）。
+     */
+    private fun isNetworkUnreachable(error: PlaybackException): Boolean {
+        var cause: Throwable? = error
+        while (cause != null) {
+            if (cause is NoRouteToHostException) return true
+            if (cause is SocketException) {
+                val msg = (cause.message ?: "").lowercase()
+                if (msg.contains("unreachable") || msg.contains("enetunreach") ||
+                    msg.contains("enetdown") || msg.contains("ehostunreach") ||
+                    msg.contains("network is down")
+                ) {
+                    return true
+                }
+            }
+            cause = cause.cause
+        }
+        return false
+    }
+
+    /**
+     * 看门狗判据：有正在收看的频道、不在播、且链路正常时，若已经 [STUCK_MS]
+     * 没有出现「健康」信号（READY 或 isPlaying），就按当前源重建一次。
+     *
+     * 只在 Fragment 处于前台（[isResumed]）时干预：退到后台时 onPause 会主动 pause，
+     * 此时「不在播」是正常状态，不应触发重建。
+     */
+    private fun checkStuck() {
+        val vm = tvViewModel ?: return
+        val p = playerView?.player ?: return
+        if (p.isPlaying) {
+            lastHealthyAt = System.currentTimeMillis()
+            return
+        }
+        if (!isResumed) return
+        // 断网中：交给 PlaybackRecovery 的恢复链路，别在这里空转
+        if (PlaybackRecovery.isOffline) return
+        val stuckMs = System.currentTimeMillis() - lastHealthyAt
+        if (stuckMs < STUCK_MS) return
+        Log.i(TAG, "watchdog: no healthy signal for ${stuckMs}ms, rebuild ${vm.getTV().title}")
+        awaitingNetwork = false
+        transientRetries = 0
+        sourceRotations = 0
+        startPlay(vm)
     }
 
     private fun guessMimeType(url: String): String? {
@@ -379,6 +542,7 @@ class PlayerFragment : Fragment() {
         super.onDestroyView()
         pendingPlay?.let { playHandler.removeCallbacks(it) }
         pendingPlay = null
+        handler.removeCallbacksAndMessages(null)
         PlaybackRecovery.listener = null
         _binding = null
     }
@@ -388,5 +552,17 @@ class PlayerFragment : Fragment() {
 
         /** 当前源累计重缓冲达到该值后，换台时优先换选实播无劣迹的备选源 */
         private const val STALL_SWITCH_THRESHOLD = 2
+
+        /** 断网期间展示在错误屏上的提示：明确是网络问题，且会自动恢复 */
+        private const val WAIT_NETWORK_MSG = "网络已断开，等待网络恢复后自动重连…"
+
+        /** 看门狗巡检间隔 */
+        private const val WATCHDOG_INTERVAL_MS = 5_000L
+
+        /** 多久没有任何「健康」信号就判定为卡死并重建当前源 */
+        private const val STUCK_MS = 20_000L
+
+        /** 连续稳定播放满此时长，给当前源衰减一次劣迹计数 */
+        private const val STABLE_DECAY_MS = 60_000L
     }
 }

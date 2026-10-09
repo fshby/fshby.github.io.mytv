@@ -65,27 +65,21 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
     private val delayHideMain: Long = 10000
     private val delayHideSetting: Long = 15000
 
-    /** 断网恢复自愈：监听系统网络可用事件，通知播放器重连 */
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
-
     init {
         Utils.setRequestListener(this)
     }
 
-    private fun registerNetworkCallback() {
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                Log.i(TAG, "network available")
-                PlaybackRecovery.onNetworkRestored()
-            }
-        }
-        try {
-            cm.registerNetworkCallback(NetworkRequest.Builder().build(), callback)
-            networkCallback = callback
-        } catch (e: Exception) {
-            Log.e(TAG, "registerNetworkCallback failed", e)
-        }
+    /**
+     * 断网恢复自愈：由 [PlaybackRecovery] 统一监听默认网络，
+     * 网络恢复后通知播放器重连当前频道。
+     *
+     * 历史坑：这里原先定义了一个 registerNetworkCallback() 却**从未被调用**
+     * （v2.1.8 的旧注册代码被注释掉后没接线），等于完全没有网络恢复机制——
+     * 断网后播放器耗尽重试并停在错误屏，只能手动换台。现已改为随 Activity
+     * 生命周期启动/停止，见 onCreate / onDestroy。
+     */
+    private fun startNetworkRecovery() {
+        PlaybackRecovery.start(this)
     }
 
     fun syncTime() {
@@ -174,6 +168,9 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
 //        }
 
         SP.setOnSharedPreferenceChangeListener(this)
+
+        // 启动网络监听（断网重连后自动恢复播放），随 Activity 生命周期停止
+        startNetworkRecovery()
     }
 
     fun showInfoFragment(tvViewModel: TVViewModel) {
@@ -686,11 +683,7 @@ class MainActivity : FragmentActivity(), Request.RequestListener, OnSharedPrefer
     override fun onDestroy() {
         super.onDestroy()
         Request.onDestroy()
-        networkCallback?.let {
-            (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
-                ?.unregisterNetworkCallback(it)
-        }
-        networkCallback = null
+        PlaybackRecovery.stop()
     }
 
     override fun onRequestFinished(message: String?) {

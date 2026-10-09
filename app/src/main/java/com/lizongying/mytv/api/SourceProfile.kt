@@ -166,6 +166,22 @@ object SourceProfiles {
         Log.i(TAG, "stall #${p.stalls + 1} noted for ${url.substringBefore('?').takeLast(60)}")
     }
 
+    /**
+     * 稳定播放一段时间后衰减一次劣迹计数。
+     *
+     * 重缓冲归因无法区分「源真的烂」和「整网断了/出口抖动」——后者会让好源
+     * 被冤枉（实测断网 45s 期间单源被记 4 次 stall）。稳定播放本身就是
+     * 最好的反证：连续播满一分钟减一票，几个周期内即可洗白，而真烂的源
+     * 播不满一分钟、永远减不了。
+     */
+    fun decayStall(url: String) {
+        if (url.isEmpty()) return
+        val p = map[url] ?: return
+        if (p.stalls <= 0) return
+        map[url] = p.copy(stalls = p.stalls - 1)
+        Log.i(TAG, "stall decayed to ${p.stalls - 1} for ${url.substringBefore('?').takeLast(60)}")
+    }
+
     /** 进程启动早期调用，避免首次换台时在主线程读文件 */
     fun preload(context: Context) {
         if (!loaded) load(context)

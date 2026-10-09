@@ -25,6 +25,24 @@ class DnsCache(
 
     private val cache = ConcurrentHashMap<String, Entry>()
 
+    /** 丢弃单个域名的缓存（解析失败时调用，避免坏结果被 TTL 留住） */
+    fun invalidate(hostname: String) {
+        cache.remove(hostname)
+    }
+
+    /**
+     * 清空全部缓存。
+     *
+     * 网络切换 / 断网重连后必须调用：TTL 默认 5 分钟，而这期间出口网关、
+     * NAT 地址、CDN 调度都可能整体变化，缓存里的旧 IP 往往直接不可达。
+     * 播放恢复若还拿着旧 IP，会出现「网络明明回来了却连不上」的假故障。
+     */
+    fun clear() {
+        val n = cache.size
+        cache.clear()
+        if (n > 0) Log.i(TAG, "clear $n entries (network changed)")
+    }
+
     override fun lookup(hostname: String): List<InetAddress> {
         val now = System.currentTimeMillis()
         cache[hostname]?.let { e ->
